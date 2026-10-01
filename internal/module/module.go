@@ -63,34 +63,65 @@ type Searcher interface {
 
 // ---- promote ----
 
-type PromoteInput struct {
-	Group        string `json:"group"`
-	Artifact     string `json:"artifact"`
-	Version      string `json:"version"`
-	Force        bool   `json:"force,omitempty"`
-	DeleteSource bool   `json:"delete_source,omitempty"`
+// Pin rewrites a SNAPSHOT reference (parent or dependency) of the promoted pom.
+type Pin struct {
+	Group    string `json:"group"`
+	Artifact string `json:"artifact"`
+	Version  string `json:"version"`
 }
 
+type PromoteInput struct {
+	Group             string `json:"group"`
+	Artifact          string `json:"artifact"`
+	Version           string `json:"version"`              // 1.2.3, 1.2.3-SNAPSHOT or 1.2.3-20260914.070210-43
+	AsVersion         string `json:"as_version,omitempty"` // target version (default: source without -SNAPSHOT)
+	Build             string `json:"build,omitempty"`      // snapshot build: "43" or "20260914.070210-43"
+	Pins              []Pin  `json:"pins,omitempty"`
+	AllowSnapshotRefs bool   `json:"allow_snapshot_refs,omitempty"`
+	NoMarker          bool   `json:"no_marker,omitempty"`
+	Force             bool   `json:"force,omitempty"`
+	DeleteSource      bool   `json:"delete_source,omitempty"`
+	Tool              string `json:"-"` // "nexus-toolbox x.y.z", written in the marker file
+}
+
+const (
+	KindFile   = "file"
+	KindMarker = "marker"
+)
+
 type PlanItem struct {
-	Path        string `json:"path"`
-	Size        int64  `json:"size"`
-	SHA1        string `json:"sha1"`
-	Action      string `json:"action"` // copy | skip | conflict
-	Reason      string `json:"reason,omitempty"`
-	DownloadURL string `json:"-"`
+	Kind        string   `json:"kind"`
+	SourcePath  string   `json:"source_path,omitempty"`
+	Path        string   `json:"path"` // destination path
+	Size        int64    `json:"size"`
+	SourceSHA1  string   `json:"source_sha1,omitempty"`
+	SHA1        string   `json:"sha1"` // expected sha1 in the destination
+	Transformed bool     `json:"transformed,omitempty"`
+	Diff        []string `json:"diff,omitempty"`
+	Action      string   `json:"action"` // copy | skip | conflict
+	Reason      string   `json:"reason,omitempty"`
+	DownloadURL string   `json:"-"`
+	Content     []byte   `json:"-"` // in-memory content (rewritten pom)
 }
 
 type PromotePlan struct {
-	Group        string     `json:"group"`
-	Artifact     string     `json:"artifact"`
-	Version      string     `json:"version"`
-	Source       string     `json:"source"`
-	Destination  string     `json:"destination"`
-	SourceID     string     `json:"source_component_id"`
-	Items        []PlanItem `json:"items"`
-	Force        bool       `json:"force"`
-	DeleteSource bool       `json:"delete_source"`
-	Warnings     []string   `json:"warnings,omitempty"`
+	Group             string     `json:"group"`
+	Artifact          string     `json:"artifact"`
+	Version           string     `json:"version"` // as requested
+	SourceVersion     string     `json:"source_version"`
+	SourceBuild       string     `json:"source_build,omitempty"`
+	Builds            []string   `json:"available_builds,omitempty"`
+	TargetVersion     string     `json:"target_version"`
+	Source            string     `json:"source"`
+	Destination       string     `json:"destination"`
+	SourceID          string     `json:"source_component_id,omitempty"`
+	Items             []PlanItem `json:"items"`
+	SnapshotRefs      []string   `json:"unresolved_snapshot_refs,omitempty"`
+	AllowSnapshotRefs bool       `json:"allow_snapshot_refs,omitempty"`
+	Force             bool       `json:"force"`
+	DeleteSource      bool       `json:"delete_source"`
+	Tool              string     `json:"-"`
+	Warnings          []string   `json:"warnings,omitempty"`
 }
 
 // Blocking returns the items that prevent the promotion (conflicts without --force).
@@ -104,12 +135,23 @@ func (p *PromotePlan) Blocking() []PlanItem {
 	return out
 }
 
+// BlockingRefs returns SNAPSHOT references that forbid the promotion.
+func (p *PromotePlan) BlockingRefs() []string {
+	if p.AllowSnapshotRefs {
+		return nil
+	}
+	return p.SnapshotRefs
+}
+
 type PromoteResult struct {
 	Copied        int      `json:"copied"`
 	Skipped       int      `json:"skipped"`
 	Failed        []string `json:"failed,omitempty"`
 	Verified      bool     `json:"verified"`
+	MarkerWritten bool     `json:"marker_written"`
+	MetadataOK    bool     `json:"metadata_ok"`
 	SourceDeleted bool     `json:"source_deleted"`
+	Warnings      []string `json:"warnings,omitempty"`
 }
 
 // Reporter receives progress events (CLI draws bars; MCP could emit notifications).

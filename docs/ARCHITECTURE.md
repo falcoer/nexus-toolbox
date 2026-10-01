@@ -50,13 +50,16 @@ Ajouter un format = créer `internal/formats/<format>/` et l'ajouter à `module.
 
 ## Promotion Maven
 
-Nexus 3 OSS ne propose pas d'API de promotion (staging = Pro). `promote` = **copie vérifiée**
-(+ suppression optionnelle de la source). Voir `internal/formats/maven/promote.go` :
-1. plan : validations (formats, hosted, version policy et write policy de la destination, refus des `-SNAPSHOT`), détection fichier par fichier via `GET <dst>/<path>.sha1` (absent → copier, identique → ignorer, différent → conflit) ;
-2. copie : téléchargement dans un fichier temporaire (sha1 recalculé et comparé à celui de la source), puis `PUT` sur le chemin Maven du repository de destination (Nexus régénère checksums et `maven-metadata.xml`) ;
-3. vérification : sha1 servi par la destination = sha1 de la source ;
-4. option `--delete-source` : suppression du composant source, uniquement si tout est vérifié.
-Relancer la commande reprend là où elle s'est arrêtée (fichiers identiques ignorés).
+Nexus 3 OSS ne propose pas d'API de promotion (staging = Pro). `promote` = **renommage + copie vérifiée**
+(+ suppression optionnelle de la source). Voir `internal/formats/maven/` :
+
+1. **résolution** (`snapshot.go`) : pour un `-SNAPSHOT`, recherche `maven.baseVersion`, regroupement des fichiers par build horodaté (`-YYYYMMDD.HHMMSS-N`), choix du plus récent ou de `--build` ; pour une version figée, composant exact ;
+2. **plan** (`promote.go`, aucune écriture) : validations (hosted, version/write policy de la destination), chemin de destination de chaque fichier, pom réécrit en mémoire (`pom.go`, découpe aux offsets), sha1 attendu, détection fichier par fichier via `GET <dst>/<path>.sha1` (absent → copier, identique → ignorer, différent → conflit), références SNAPSHOT ;
+3. **copie** : binaires streamés via fichier temporaire (sha1 recalculé et comparé à la source), pom envoyé depuis la mémoire, `PUT` sur le chemin Maven de la destination (Nexus génère checksums et métadonnées) ;
+4. **vérification** : sha1 servi par la destination = sha1 attendu ; lecture de `maven-metadata.xml` ;
+5. **marqueur** `-promoted-from.txt` (`marker.go`), puis `--delete-source` du composant promu si tout est vérifié.
+
+Relancer la commande reprend là où elle s'est arrêtée (fichiers identiques ignorés, marqueur existant conservé).
 
 ## Trajectoire MCP (non implémentée)
 

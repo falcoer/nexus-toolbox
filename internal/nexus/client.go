@@ -263,3 +263,17 @@ func (c *Client) GetText(ctx context.Context, u string) (string, error) {
 func (c *Client) RepoURL(repo, path string) string {
 	return c.Base + "/repository/" + repo + "/" + strings.TrimLeft(path, "/")
 }
+
+// GetBytes downloads a small resource (max 8 MiB) into memory.
+func (c *Client) GetBytes(ctx context.Context, u string) ([]byte, error) {
+	resp, err := c.do(ctx, http.MethodGet, u, nil, 0, "", true)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20+1))
+	if err == nil && len(b) > 8<<20 {
+		err = fmt.Errorf("%s : ressource trop volumineuse", u)
+	}
+	return b, err
+}

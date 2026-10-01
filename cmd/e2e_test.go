@@ -14,6 +14,8 @@ import (
 	"github.com/falcoer/nexus-toolbox/internal/ui"
 )
 
+const snapPom = "<project><artifactId>ghc</artifactId><version>1.0-SNAPSHOT</version></project>"
+
 func sha(s string) string { h := sha1.Sum([]byte(s)); return hex.EncodeToString(h[:]) }
 
 func fakeNexus(t *testing.T) (*httptest.Server, map[string]string) {
@@ -30,10 +32,27 @@ func fakeNexus(t *testing.T) (*httptest.Server, map[string]string) {
 			{"name":"rel","format":"maven2","type":"hosted","attributes":{"maven":{"versionPolicy":"RELEASE"},"storage":{"writePolicy":"ALLOW_ONCE"}}}]`)
 	})
 	mux.HandleFunc("/nexus/service/rest/v1/search", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("maven.baseVersion") != "" {
+			var items []string
+			for _, b := range []string{"20260914.070210-43", "20260914.091709-45"} {
+				items = append(items, fmt.Sprintf(`{"id":"c-%s","group":"com.acme","name":"ghc","version":"1.0-%s","assets":[
+				{"path":"com/acme/ghc/1.0-SNAPSHOT/ghc-1.0-%s.pom","downloadUrl":"%s/nexus/repository/snap/pom","fileSize":%d,"checksum":{"sha1":"%s"}},
+				{"path":"com/acme/ghc/1.0-SNAPSHOT/ghc-1.0-%s.war","downloadUrl":"%s/nexus/repository/snap/war","fileSize":3,"checksum":{"sha1":"%s"}}]}`,
+					b, b, b, srv.URL, len(snapPom), sha(snapPom), b, srv.URL, sha(jar)))
+			}
+			fmt.Fprintf(w, `{"items":[%s]}`, strings.Join(items, ","))
+			return
+		}
 		fmt.Fprintf(w, `{"items":[{"id":"c1","repository":"snap","group":"com.acme","name":"lib","version":"1.0",
 		"assets":[{"path":"com/acme/lib/1.0/lib-1.0.jar","downloadUrl":"%s/nexus/repository/snap/com/acme/lib/1.0/lib-1.0.jar","fileSize":3,"checksum":{"sha1":"%s"}}]}],"continuationToken":null}`, srv.URL, sha(jar))
 	})
-	mux.HandleFunc("/nexus/repository/snap/", func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, jar) })
+	mux.HandleFunc("/nexus/repository/snap/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/pom") {
+			io.WriteString(w, snapPom)
+			return
+		}
+		io.WriteString(w, jar)
+	})
 	mux.HandleFunc("/nexus/repository/rel/", func(w http.ResponseWriter, r *http.Request) {
 		p := strings.TrimPrefix(r.URL.Path, "/nexus/repository/rel/")
 		if r.Method == http.MethodPut {
@@ -106,5 +125,20 @@ func TestEndToEnd(t *testing.T) {
 	}
 	if _, _, err := run(t, "search", "unknown"); err == nil {
 		t.Fatal("unknown alias must fail")
+	}
+	// snapshot → release with re-versioning
+	_, e, err := run(t, "promote", "snap", "rel", "com.acme:ghc:1.0-SNAPSHOT", "--dry-run")
+	t.Log("\n" + e)
+	if err != nil || !strings.Contains(e, "ghc-1.0-20260914.091709-45.war") || !strings.Contains(e, "1.0-SNAPSHOT → 1.0") {
+		t.Fatalf("snapshot dry-run: %v", err)
+	}
+	if dst["com/acme/ghc/1.0/ghc-1.0.war"] != "" {
+		t.Fatal("dry-run wrote")
+	}
+	out, e, err = run(t, "promote", "snap", "rel", "com.acme:ghc:1.0-SNAPSHOT", "--yes", "-o", "json")
+	t.Log("\n" + e)
+	if err != nil || dst["com/acme/ghc/1.0/ghc-1.0.war"] != "JAR" || !strings.Contains(dst["com/acme/ghc/1.0/ghc-1.0.pom"], "<version>1.0</version>") ||
+		!strings.Contains(out, `"target_version": "1.0"`) || !strings.Contains(dst["com/acme/ghc/1.0/ghc-1.0-promoted-from.txt"], "source-build: 20260914.091709-45") {
+		t.Fatalf("snapshot promote: %v\n%s\n%v", err, out, dst)
 	}
 }

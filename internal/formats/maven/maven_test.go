@@ -38,13 +38,14 @@ type fake struct {
 	del   []string
 	srv   *httptest.Server
 	dstPW string // write policy
+	snap  []nexus.Component
 }
 
 func sum(s string) string { h := sha1.Sum([]byte(s)); return hex.EncodeToString(h[:]) }
 
 func newFake(t *testing.T, policy string) *fake {
 	f := &fake{src: map[string]string{
-		"com/acme/lib/1.0/lib-1.0.jar": "JARDATA", "com/acme/lib/1.0/lib-1.0.pom": "<pom/>",
+		"com/acme/lib/1.0/lib-1.0.jar": "JARDATA", "com/acme/lib/1.0/lib-1.0.pom": "<project><version>1.0</version></project>",
 		"com/acme/lib/1.0/lib-1.0.jar.sha1": "x", "com/acme/lib/maven-metadata.xml": "m"}, dst: map[string]string{}, dstPW: policy}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/service/rest/v1/repositories", func(w http.ResponseWriter, r *http.Request) {
@@ -52,6 +53,10 @@ func newFake(t *testing.T, policy string) *fake {
 		{"name":"dst","format":"maven2","type":"hosted","attributes":{"maven":{"versionPolicy":"RELEASE"},"storage":{"writePolicy":%q}}}]`, f.dstPW)
 	})
 	mux.HandleFunc("/service/rest/v1/search", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("maven.baseVersion") != "" {
+			json.NewEncoder(w).Encode(nexus.ComponentPage{Items: f.snap})
+			return
+		}
 		var assets []nexus.Asset
 		for p, c := range f.src {
 			assets = append(assets, nexus.Asset{Path: p, DownloadURL: f.srv.URL + "/repository/src/" + p, FileSize: int64(len(c)), Checksum: map[string]string{"sha1": sum(c)}})
@@ -102,7 +107,7 @@ func (f *fake) targets() (module.Target, module.Target) {
 	return mk("src"), mk("dst")
 }
 
-var in = module.PromoteInput{Group: "com.acme", Artifact: "lib", Version: "1.0"}
+var in = module.PromoteInput{Group: "com.acme", Artifact: "lib", Version: "1.0", NoMarker: true}
 
 func TestPromoteSuccessDeleteSource(t *testing.T) {
 	f := newFake(t, "ALLOW")

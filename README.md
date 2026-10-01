@@ -23,13 +23,25 @@ nexus repos list
 nexus search rdsf-qp-snapshots quality --from-version 1.2 --to-version 1.9
 nexus search rdsf-qp-snapshots --group com.acme -o json
 
-# 3. promouvoir un artifact (toujours commencer par --dry-run)
-nexus promote rdsf-qp-snapshots rdsf-qp-releases com.acme:quality-core:1.4.2 --dry-run
-nexus promote rdsf-qp-snapshots rdsf-qp-releases com.acme:quality-core:1.4.2 --delete-source
+# 3. promouvoir un snapshot en release (toujours commencer par --dry-run)
+nexus promote snap rel com.acme:ghc-web:03.27.10-0-SNAPSHOT --dry-run
+nexus promote snap rel com.acme:ghc-web:03.27.10-0-SNAPSHOT                    # → 03.27.10-0, build le plus récent
+nexus promote snap rel com.acme:ghc-web:03.27.10-0-SNAPSHOT --build 43 --as-version 03.27.10-1
+nexus promote snap rel com.acme:ghc-web:03.27.10-0-SNAPSHOT --pin com.acme:parent=1.0
+nexus promote snap rel com.acme:quality-core:1.4.2 --delete-source             # version déjà figée
 ```
 
-`promote` : copie vérifiée (sha1 côté destination), reprenable, refuse les `-SNAPSHOT`, respecte la
-write policy de la destination. Codes retour : 0 ok · 1 erreur · 2 usage · 3 partiel · 4 accès refusé · 130 interrompu.
+### Ce que fait `promote`
+
+- **Build** : pour un `-SNAPSHOT`, choisit le build horodaté le plus récent (ou `--build 43` / version horodatée explicite). Le dry-run liste les builds disponibles.
+- **Renommage** : `ghc-web-03.27.10-0-20260914.070210-43.war` → `ghc-web-03.27.10-0.war` (classifier et extension conservés). Version cible = source sans `-SNAPSHOT`, ou `--as-version`.
+- **Pom** : seul le `<version>` du projet est réécrit (mise en forme, commentaires et fins de ligne préservés). Les références `-SNAPSHOT` (parent, dépendances, plugins, propriétés) **bloquent** la promotion ; `--pin groupId:artifactId=version` les réécrit, `--allow-snapshot-refs` passe outre.
+- **Binaires** (`.war`, `.jar`…) : copiés **à l'identique** (sha1 inchangé). Leurs métadonnées internes (`META-INF`) peuvent encore mentionner la version SNAPSHOT.
+- **Empreintes** : `.sha1`/`.md5` ne sont jamais envoyés, Nexus les génère ; `promote` relit le sha1 servi par la destination pour vérifier chaque fichier, puis contrôle que `maven-metadata.xml` liste la version.
+- **Traçabilité** : ajoute `ghc-web-03.27.10-0-promoted-from.txt` (dépôt/version/build source, date, auteur, sha1) **en dernier** : sa présence signifie « promotion complète ». `--no-marker` pour le désactiver.
+- **Sûreté** : refuse une destination SNAPSHOT/lecture seule/même repo, un fichier existant différent ; reprenable (fichiers identiques ignorés) ; `--delete-source` ne supprime que le build promu, après vérification complète.
+
+Codes retour : 0 ok · 1 erreur · 2 usage · 3 partiel · 4 accès refusé · 130 interrompu.
 
 Configuration dans `~/.nexus/` (`NEXUS_HOME` pour la déplacer). Pour l'automatisation :
 `NEXUS_<ALIAS>_USER` / `NEXUS_<ALIAS>_PASSWORD` (alias en majuscules, `-` → `_`).
