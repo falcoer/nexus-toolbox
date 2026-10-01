@@ -287,3 +287,14 @@ func (c *Client) Head(ctx context.Context, u string) (int64, error) {
 	resp.Body.Close()
 	return resp.ContentLength, nil
 }
+
+// HeadInfo returns the size (-1 when unknown) and Last-Modified (zero when unknown) of a resource.
+func (c *Client) HeadInfo(ctx context.Context, u string) (int64, time.Time, error) {
+	resp, err := c.do(ctx, http.MethodHead, u, nil, 0, "", true)
+	if err != nil {
+		return -1, time.Time{}, err
+	}
+	resp.Body.Close()
+	mod, _ := http.ParseTime(resp.Header.Get("Last-Modified"))
+	return resp.ContentLength, mod, nil
+}

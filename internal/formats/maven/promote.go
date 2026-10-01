@@ -230,11 +230,19 @@ func (m *Module) PlanPromote(ctx context.Context, src, dst module.Target, in mod
 		plan.Warnings = append(plan.Warnings, fmt.Sprintf("les binaires (.war, .jar…) sont copiés tels quels : leurs métadonnées internes (META-INF) peuvent encore mentionner %s", res.sourceVersion))
 	}
 
+	conflicts := 0
 	for i := range plan.Items {
 		classify(ctx, dst, &plan.Items[i], in.Force, forceAllowed, res.shaIndex)
 		if plan.Items[i].Action == "" {
 			return nil, fmt.Errorf("lecture de la destination pour %s impossible", plan.Items[i].Path)
 		}
+		if plan.Items[i].Action == "conflict" {
+			conflicts++
+			diagnoseConflict(ctx, dst, &plan.Items[i])
+		}
+	}
+	if conflicts > 0 {
+		noteExistingRelease(ctx, dst, plan, dstPath("-"+markerClassifier+".txt"))
 	}
 	// Order: binaries first, pom last, marker very last.
 	sort.SliceStable(plan.Items, func(i, j int) bool {
@@ -259,14 +267,18 @@ func (m *Module) rewritePomItem(ctx context.Context, src, dst module.Target, it 
 		return fmt.Errorf("pom source : sha1 téléchargé ≠ sha1 annoncé par Nexus")
 	}
 	pins := in.Pins
-	pr, err := RewritePom(raw, target, pins)
+	var props map[string]string
+	if in.AlignProperties {
+		props = remoteProps(ctx, dst, it.Path)
+	}
+	pr, err := RewritePomOpts(raw, target, pins, props)
 	if err != nil {
 		return err
 	}
 	if par := pr.Parent; par != nil && in.WithParent && IsSnapshot(par.Version) {
 		pin, explicit := findPin(in.Pins, par.Group, par.Artifact)
 		sub := module.PromoteInput{Group: par.Group, Artifact: par.Artifact, Version: par.Version,
-			Pins: in.Pins, AllowSnapshotRefs: in.AllowSnapshotRefs, NoMarker: in.NoMarker, Force: in.Force,
+			Pins: in.Pins, AllowSnapshotRefs: in.AllowSnapshotRefs, AlignProperties: in.AlignProperties, NoMarker: in.NoMarker, Force: in.Force,
 			WithParent: true, Tool: in.Tool, Ancestors: append(append([]string(nil), in.Ancestors...), in.Group+":"+in.Artifact)}
 		if explicit {
 			sub.AsVersion = pin.Version
@@ -282,7 +294,7 @@ func (m *Module) rewritePomItem(ctx context.Context, src, dst module.Target, it 
 		if !explicit {
 			pins = append(append([]module.Pin(nil), in.Pins...), module.Pin{Group: par.Group, Artifact: par.Artifact, Version: pp.TargetVersion})
 		}
-		if pr, err = RewritePom(raw, target, pins); err != nil {
+		if pr, err = RewritePomOpts(raw, target, pins, props); err != nil {
 			return err
 		}
 	} else if par != nil {
@@ -298,6 +310,54 @@ func (m *Module) rewritePomItem(ctx context.Context, src, dst module.Target, it 
 	it.Content, it.Size, it.SHA1 = pr.Out, int64(len(pr.Out)), sha1Hex(pr.Out)
 	it.Transformed, it.Diff = !bytes.Equal(pr.Out, raw), pr.Diff
 	return nil
+}
+
+// remoteProps returns the properties of the pom already published at path in the destination
+// (nil when absent or unreadable).
+func remoteProps(ctx context.Context, dst module.Target, p string) map[string]string {
+	b, err := dst.Client.GetBytes(ctx, dst.Client.RepoURL(dst.Repo.Name, p))
+	if err != nil {
+		return nil
+	}
+	r, err := RewritePomOpts(b, "", nil, nil)
+	if err != nil {
+		return nil
+	}
+	return r.Props
+}
+
+// diagnoseConflict collects read-only facts about what the destination already holds.
+func diagnoseConflict(ctx context.Context, dst module.Target, it *module.PlanItem) {
+	u := dst.Client.RepoURL(dst.Repo.Name, it.Path)
+	if size, mod, err := dst.Client.HeadInfo(ctx, u); err == nil {
+		if size > 0 {
+			it.RemoteSize = size
+		}
+		it.RemoteModified = mod
+	}
+	if it.Content != nil { // rewritten pom: show what differs
+		if remote, err := dst.Client.GetBytes(ctx, u); err == nil {
+			it.DiffLines = lineDiff(remote, it.Content, 40)
+		}
+	}
+}
+
+// noteExistingRelease records whether the existing release was produced by this tool.
+func noteExistingRelease(ctx context.Context, dst module.Target, plan *module.PromotePlan, markerPath string) {
+	b, err := dst.Client.GetBytes(ctx, dst.Client.RepoURL(dst.Repo.Name, markerPath))
+	if err != nil {
+		plan.Notes = append(plan.Notes, fmt.Sprintf("la release %s existante n'a pas été produite par nexus (pas de fichier -%s.txt)", plan.TargetVersion, markerClassifier))
+		return
+	}
+	var keep []string
+	for _, l := range strings.Split(string(b), "\n") {
+		for _, k := range []string{"source-version:", "source-build:", "promoted-at:", "promoted-by:"} {
+			if strings.HasPrefix(l, k) {
+				keep = append(keep, strings.TrimSpace(l))
+			}
+		}
+	}
+	plan.Notes = append(plan.Notes, "release existante déjà promue par nexus : "+strings.Join(keep, ", "))
 }
 
 func findPin(pins []module.Pin, g, a string) (module.Pin, bool) {

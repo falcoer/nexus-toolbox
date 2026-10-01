@@ -79,8 +79,9 @@ type PromoteInput struct {
 	Pins              []Pin    `json:"pins,omitempty"`
 	AllowSnapshotRefs bool     `json:"allow_snapshot_refs,omitempty"`
 	NoMarker          bool     `json:"no_marker,omitempty"`
-	WithParent        bool     `json:"with_parent,omitempty"` // also promote SNAPSHOT parent poms, ancestors first
-	Ancestors         []string `json:"-"`                     // group:artifact chain being planned (cycle/depth guard)
+	AlignProperties   bool     `json:"align_properties,omitempty"` // take SNAPSHOT property values from the pom already released at the target
+	WithParent        bool     `json:"with_parent,omitempty"`      // also promote SNAPSHOT parent poms, ancestors first
+	Ancestors         []string `json:"-"`                          // group:artifact chain being planned (cycle/depth guard)
 	Force             bool     `json:"force,omitempty"`
 	DeleteSource      bool     `json:"delete_source,omitempty"`
 	Tool              string   `json:"-"` // "nexus-toolbox x.y.z", written in the marker file
@@ -92,20 +93,23 @@ const (
 )
 
 type PlanItem struct {
-	Kind        string   `json:"kind"`
-	SourcePath  string   `json:"source_path,omitempty"`
-	Path        string   `json:"path"` // destination path
-	Size        int64    `json:"size"`
-	SourceSHA1  string   `json:"source_sha1,omitempty"`
-	RemoteSHA1  string   `json:"remote_sha1,omitempty"`   // what the destination already holds (conflict)
-	MatchBuild  string   `json:"matches_build,omitempty"` // source build identical to RemoteSHA1
-	SHA1        string   `json:"sha1"`                    // expected sha1 in the destination
-	Transformed bool     `json:"transformed,omitempty"`
-	Diff        []string `json:"diff,omitempty"`
-	Action      string   `json:"action"` // copy | skip | conflict
-	Reason      string   `json:"reason,omitempty"`
-	DownloadURL string   `json:"-"`
-	Content     []byte   `json:"-"` // in-memory content (rewritten pom)
+	Kind           string    `json:"kind"`
+	SourcePath     string    `json:"source_path,omitempty"`
+	Path           string    `json:"path"` // destination path
+	Size           int64     `json:"size"`
+	SourceSHA1     string    `json:"source_sha1,omitempty"`
+	RemoteSHA1     string    `json:"remote_sha1,omitempty"`   // what the destination already holds (conflict)
+	MatchBuild     string    `json:"matches_build,omitempty"` // source build identical to RemoteSHA1
+	DiffLines      []string  `json:"conflict_diff,omitempty"` // pom conflict: remote (-) vs expected (+)
+	RemoteSize     int64     `json:"remote_size,omitempty"`
+	RemoteModified time.Time `json:"remote_modified,omitzero"`
+	SHA1           string    `json:"sha1"` // expected sha1 in the destination
+	Transformed    bool      `json:"transformed,omitempty"`
+	Diff           []string  `json:"diff,omitempty"`
+	Action         string    `json:"action"` // copy | skip | conflict
+	Reason         string    `json:"reason,omitempty"`
+	DownloadURL    string    `json:"-"`
+	Content        []byte    `json:"-"` // in-memory content (rewritten pom)
 }
 
 type PromotePlan struct {
@@ -121,6 +125,7 @@ type PromotePlan struct {
 	SourceID          string         `json:"source_component_id,omitempty"`
 	Parents           []*PromotePlan `json:"parents,omitempty"` // SNAPSHOT parents to promote first (highest ancestor first)
 	WritePolicy       string         `json:"destination_write_policy,omitempty"`
+	Notes             []string       `json:"notes,omitempty"` // diagnostics (provenance of an existing release…)
 	Items             []PlanItem     `json:"items"`
 	SnapshotRefs      []string       `json:"unresolved_snapshot_refs,omitempty"`
 	AllowSnapshotRefs bool           `json:"allow_snapshot_refs,omitempty"`

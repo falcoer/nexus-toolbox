@@ -70,11 +70,8 @@ Un fichier ghc-web-1.2.3-promoted-from.txt trace la provenance (--no-marker pour
 				return err
 			}
 			printPlan(plan)
-			if refs := plan.BlockingRefs(); len(refs) > 0 {
-				return fmt.Errorf("le pom référence %d version(s) -SNAPSHOT (voir ci-dessus) : utilisez --pin groupId:artifactId=version pour les figer, ou --allow-snapshot-refs", len(refs))
-			}
-			if blocked := plan.Blocking(); len(blocked) > 0 {
-				return conflictError(plan, len(blocked), dst.Repo.Alias)
+			if problems := blockingProblems(plan, dst.Repo.Alias); len(problems) > 0 {
+				return errors.New(strings.Join(problems, "\n"))
 			}
 			if dry {
 				env.Infof("dry-run : rien n'a été modifié")
@@ -107,18 +104,30 @@ Un fichier ghc-web-1.2.3-promoted-from.txt trace la provenance (--no-marker pour
 	f.StringVar(&in.Build, "build", "", "build du snapshot à promouvoir : 43 ou 20260914.070210-43 (défaut : le plus récent)")
 	f.StringArrayVar(&pins, "pin", nil, "réécrit une référence -SNAPSHOT du pom : groupId:artifactId=version (répétable)")
 	f.BoolVar(&in.AllowSnapshotRefs, "allow-snapshot-refs", false, "autorise les références -SNAPSHOT restantes dans le pom")
+	f.BoolVar(&in.AlignProperties, "align-properties", false, "reprend les valeurs des propriétés -SNAPSHOT depuis le pom déjà publié en release à la version cible")
 	f.BoolVar(&in.WithParent, "with-parent", false, "promeut aussi les parents -SNAPSHOT du pom (ancêtres d'abord) et fige la référence")
 	f.BoolVar(&in.NoMarker, "no-marker", false, "n'ajoute pas le fichier -promoted-from.txt")
 	f.BoolVar(&in.DeleteSource, "delete-source", false, "supprime la source après copie vérifiée")
 	return c
 }
 
-func conflictError(p *module.PromotePlan, n int, dst string) error {
-	hint := "--force écrasera les fichiers existants"
-	if p.WritePolicy == "ALLOW_ONCE" {
-		hint = "la write policy ALLOW_ONCE interdit l'écrasement : supprimez cette version dans le repo " + dst + " (UI Nexus) ou choisissez --as-version"
+// blockingProblems lists every reason that forbids the promotion (conflicts, SNAPSHOT references).
+func blockingProblems(p *module.PromotePlan, dst string) []string {
+	var out []string
+	if refs := p.BlockingRefs(); len(refs) > 0 {
+		out = append(out, fmt.Sprintf("le pom référence %d version(s) -SNAPSHOT (voir ci-dessus)\n  %s --pin groupId:artifactId=version les fige (parent, dépendances) ; --align-properties reprend les propriétés de la release existante ; --allow-snapshot-refs passe outre", len(refs), env.Arrow()))
 	}
-	return fmt.Errorf("%d fichier(s) existent déjà dans %s avec un contenu différent\n  %s %s", n, dst, env.Arrow(), hint)
+	if n := len(p.Blocking()); n > 0 {
+		out = append(out, fmt.Sprintf("%d fichier(s) existent déjà dans %s avec un contenu différent\n  %s %s", n, dst, env.Arrow(), conflictHint(p, dst)))
+	}
+	return out
+}
+
+func conflictHint(p *module.PromotePlan, dst string) string {
+	if p.WritePolicy == "ALLOW_ONCE" {
+		return "la write policy ALLOW_ONCE interdit l'écrasement : supprimez cette version dans le repo " + dst + " (UI Nexus) ou choisissez --as-version"
+	}
+	return "--force écrasera les fichiers existants"
 }
 
 func confirmText(p *module.PromotePlan) string {
@@ -150,6 +159,29 @@ func printPlan(p *module.PromotePlan) {
 		fmt.Fprintln(env.Err, env.Muted("── artifact principal ──"))
 	}
 	printOnePlan(p)
+	printSummary(p)
+}
+
+// printSummary states what the plan means overall (existing release, nothing to do).
+func printSummary(p *module.PromotePlan) {
+	conflicts, copies := 0, 0
+	for _, pl := range append(append([]*module.PromotePlan{}, p.Parents...), p) {
+		for _, it := range pl.Items {
+			switch {
+			case it.Action == "conflict":
+				conflicts++
+			case it.Action == "copy" && it.Kind == module.KindFile:
+				copies++
+			}
+		}
+	}
+	if conflicts > 0 {
+		fmt.Fprintf(env.Err, "%s %d fichier(s) en conflit : la version %s existe déjà dans %s\n", env.IconWarn(), conflicts, env.Accent(p.TargetVersion), p.Destination)
+		fmt.Fprintf(env.Err, "  %s %s\n", env.Arrow(), conflictHint(p, p.Destination))
+	}
+	if conflicts == 0 && copies == 0 {
+		fmt.Fprintf(env.Err, "%s rien à promouvoir : tous les fichiers sont déjà présents et identiques\n", env.IconInfo())
+	}
 }
 
 func printOnePlan(p *module.PromotePlan) {
@@ -202,9 +234,38 @@ func printOnePlan(p *module.PromotePlan) {
 		for _, d := range it.Diff {
 			fmt.Fprintf(e.Err, "             %s %s\n", e.Info("pom"), d)
 		}
+		if it.Action == "conflict" {
+			if it.RemoteSize > 0 || !it.RemoteModified.IsZero() {
+				d := "destination :"
+				if it.RemoteSize > 0 {
+					d += " " + ui.HumanSize(it.RemoteSize)
+				}
+				if !it.RemoteModified.IsZero() {
+					d += ", publié le " + it.RemoteModified.Local().Format("2006-01-02 15:04")
+				}
+				if it.Size > 0 {
+					d += " — source : " + ui.HumanSize(it.Size)
+				}
+				fmt.Fprintf(e.Err, "             %s\n", e.Muted(d))
+			}
+			for _, l := range it.DiffLines {
+				switch {
+				case strings.HasPrefix(l, "- "):
+					l = e.Error(l)
+				case strings.HasPrefix(l, "+ "):
+					l = e.Success(l)
+				default:
+					l = e.Muted(l)
+				}
+				fmt.Fprintf(e.Err, "             %s\n", l)
+			}
+		}
 		if it.Action == "copy" {
 			total += it.Size
 		}
+	}
+	for _, n := range p.Notes {
+		fmt.Fprintf(e.Err, "  %s %s\n", e.IconInfo(), n)
 	}
 	for _, r := range p.SnapshotRefs {
 		icon := e.IconErr()

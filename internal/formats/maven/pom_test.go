@@ -62,3 +62,26 @@ func TestRewritePomEdgeCases(t *testing.T) {
 		t.Error("same version must be a no-op")
 	}
 }
+
+func TestRewritePomProperties(t *testing.T) {
+	src := "<project>\r\n <properties>\r\n  <mw.version>2.10.10-0-SNAPSHOT</mw.version>\r\n  <frm.version>2.10.9-0-SNAPSHOT</frm.version>\r\n  <java>17</java>\r\n </properties>\r\n</project>\r\n"
+	r, err := RewritePomOpts([]byte(src), "", nil, map[string]string{"mw.version": "2.10.10-0", "other": "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Replace(src, "<mw.version>2.10.10-0-SNAPSHOT", "<mw.version>2.10.10-0", 1)
+	if string(r.Out) != want {
+		t.Errorf("only the aligned property may change:\n%s", r.Out)
+	}
+	if len(r.Refs) != 1 || !strings.Contains(r.Refs[0], "frm.version") || len(r.Diff) != 1 || !strings.Contains(r.Diff[0], "valeur de la release existante") {
+		t.Errorf("refs=%v diff=%v", r.Refs, r.Diff)
+	}
+	if r.Props["java"] != "17" || r.Props["frm.version"] != "2.10.9-0-SNAPSHOT" {
+		t.Errorf("props=%v", r.Props)
+	}
+	// a SNAPSHOT value in the release is not an alignment
+	r, _ = RewritePomOpts([]byte(src), "", nil, map[string]string{"mw.version": "9-SNAPSHOT"})
+	if len(r.Refs) != 2 {
+		t.Errorf("refs=%v", r.Refs)
+	}
+}

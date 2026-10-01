@@ -19,6 +19,7 @@ type PomResult struct {
 	UnusedPins []string
 	HasVersion bool // the pom declares its own <version>
 	Parent     *ParentRef
+	Props      map[string]string // every <properties> entry, as found
 }
 
 // ParentRef is the <parent> declared by a pom (as found, before any pin).
@@ -43,13 +44,20 @@ type coordCtx struct {
 // SNAPSHOT parent/dependency/plugin references. It only splices the bytes of the
 // affected values, so formatting, comments and line endings are preserved.
 func RewritePom(src []byte, newVersion string, pins []module.Pin) (*PomResult, error) {
+	return RewritePomOpts(src, newVersion, pins, nil)
+}
+
+// RewritePomOpts is RewritePom with property overrides: a SNAPSHOT property listed in
+// props (with a non-SNAPSHOT value) is replaced. An empty newVersion leaves the project
+// version untouched (read-only use, e.g. to collect Props).
+func RewritePomOpts(src []byte, newVersion string, pins []module.Pin, props map[string]string) (*PomResult, error) {
 	dec := xml.NewDecoder(bytes.NewReader(src))
 	dec.Strict = false
 	var (
 		path  []string
 		ctxs  []*coordCtx
 		edits []edit
-		res   = &PomResult{}
+		res   = &PomResult{Props: map[string]string{}}
 		used  = map[int]bool{}
 		prev  int
 		// text capture for leaf elements we care about
@@ -105,7 +113,7 @@ func RewritePom(src []byte, newVersion string, pins []module.Pin) (*PomResult, e
 					if strings.Contains(val, "${") {
 						return nil, fmt.Errorf("la version du projet est une propriété (%s) : promotion impossible, figez-la dans le pom", val)
 					}
-					if val != newVersion {
+					if newVersion != "" && val != newVersion {
 						edits = append(edits, edit{start, end, newVersion})
 						res.Diff = append(res.Diff, fmt.Sprintf("version du projet : %s → %s", val, newVersion))
 					}
@@ -117,8 +125,15 @@ func RewritePom(src []byte, newVersion string, pins []module.Pin) (*PomResult, e
 					c := ctxs[len(ctxs)-1]
 					c.version, c.hasVersion, c.vStart, c.vEnd = val, true, start, end
 				case "prop":
+					name := path[len(path)-1]
+					res.Props[name] = val
 					if IsSnapshot(val) {
-						res.Refs = append(res.Refs, fmt.Sprintf("propriété %s = %s", path[len(path)-1], val))
+						if nv, ok := props[name]; ok && nv != "" && !IsSnapshot(nv) {
+							edits = append(edits, edit{start, end, nv})
+							res.Diff = append(res.Diff, fmt.Sprintf("propriété %s : %s → %s (valeur de la release existante)", name, val, nv))
+						} else {
+							res.Refs = append(res.Refs, fmt.Sprintf("propriété %s = %s", name, val))
+						}
 					}
 				}
 			}

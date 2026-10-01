@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -98,6 +99,13 @@ func newFake(t *testing.T, policy string) *fake {
 				io.WriteString(w, sum(c))
 				return
 			}
+		} else if c, ok := f.dst[p]; ok {
+			w.Header().Set("Last-Modified", "Mon, 14 Sep 2026 14:20:00 GMT")
+			w.Header().Set("Content-Length", strconv.Itoa(len(c)))
+			if r.Method != http.MethodHead {
+				io.WriteString(w, c)
+			}
+			return
 		}
 		http.NotFound(w, r)
 	})

@@ -65,6 +65,14 @@ func fakeNexus(t *testing.T) (*httptest.Server, map[string]string) {
 			io.WriteString(w, sha(dst[base]))
 			return
 		}
+		if c, ok := dst[p]; ok && !strings.HasSuffix(p, ".sha1") {
+			w.Header().Set("Last-Modified", "Mon, 14 Sep 2026 14:20:00 GMT")
+			w.Header().Set("Content-Length", fmt.Sprint(len(c)))
+			if r.Method != http.MethodHead {
+				io.WriteString(w, c)
+			}
+			return
+		}
 		http.NotFound(w, r)
 	})
 	srv = httptest.NewServer(mux)
@@ -140,5 +148,14 @@ func TestEndToEnd(t *testing.T) {
 	if err != nil || dst["com/acme/ghc/1.0/ghc-1.0.war"] != "JAR" || !strings.Contains(dst["com/acme/ghc/1.0/ghc-1.0.pom"], "<version>1.0</version>") ||
 		!strings.Contains(out, `"target_version": "1.0"`) || !strings.Contains(dst["com/acme/ghc/1.0/ghc-1.0-promoted-from.txt"], "source-build: 20260914.091709-45") {
 		t.Fatalf("snapshot promote: %v\n%s\n%v", err, out, dst)
+	}
+	// an existing release with different content is explained, and every blocker is reported
+	dst["com/acme/ghc/1.0/ghc-1.0.war"] = "OTHER-WAR"
+	_, e, err = run(t, "promote", "snap", "rel", "com.acme:ghc:1.0-SNAPSHOT", "--dry-run")
+	t.Log("\n" + e)
+	if err == nil || !strings.Contains(err.Error(), "existent déjà") || !strings.Contains(err.Error(), "ALLOW_ONCE") ||
+		!strings.Contains(e, "destination : 9 B, publié le 2026-09-14") || !strings.Contains(e, "la version 1.0 existe déjà") ||
+		!strings.Contains(e, "déjà promue par nexus") {
+		t.Fatalf("conflict diagnostics: %v", err)
 	}
 }
