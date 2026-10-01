@@ -15,7 +15,7 @@ import (
 func newPromote() *cobra.Command {
 	var in module.PromoteInput
 	var dry bool
-	var pins []string
+	var pins, setProps []string
 	c := &cobra.Command{
 		Use:   "promote <repo-source> <repo-destination> <groupId:artifactId:version>",
 		Short: "Promeut un artifact d'un repository vers un autre (ex. snapshot → release)",
@@ -30,8 +30,10 @@ les fichiers sont renommés (ghc-web-1.2.3-20260914.070210-43.war → ghc-web-1.
 <version> du pom est réécrit (1.2.3-SNAPSHOT → 1.2.3, ou --as-version). Les binaires restent
 inchangés ; Nexus recalcule les empreintes. Les références -SNAPSHOT du pom (parent,
 dépendances) bloquent la promotion : --pin groupId:artifactId=version les réécrit.
-Un fichier ghc-web-1.2.3-promoted-from.txt trace la provenance (--no-marker pour le désactiver).`,
+Un fichier ghc-web-1.2.3-promoted-from-1.2.3-20260914.070210-43.txt (version d'origine en suffixe)
+trace la provenance (--no-marker pour le désactiver).`,
 		Example: `  nexus promote snap rel com.acme:ghc-web:03.27.10-0-SNAPSHOT --dry-run
+  nexus promote snap rel com.acme:app:1.0.0-20260930.120201-1 --as-version 1.0.0.beta1-0 --with-parent --release-properties --pin com.acme:parent=1.0.0.beta1-0
   nexus promote snap rel com.acme:ghc-web:03.27.10-0-SNAPSHOT --build 43 --as-version 03.27.10-1
   nexus promote snap rel com.acme:ghc-web:03.27.10-0-SNAPSHOT --pin com.acme:parent=1.0
   nexus promote snap rel com.acme:quality-core:1.4.2 --delete-source`,
@@ -44,6 +46,16 @@ Un fichier ghc-web-1.2.3-promoted-from.txt trace la provenance (--no-marker pour
 			}
 			in.Group, in.Artifact, in.Version = parts[0], parts[1], parts[2]
 			in.Tool = "nexus-toolbox " + version
+			for _, sp := range setProps {
+				name, val, ok := strings.Cut(sp, "=")
+				if !ok || name == "" || val == "" {
+					return usageError{fmt.Errorf("--set-property attend nom=valeur, reçu %q", sp)}
+				}
+				if in.SetProperties == nil {
+					in.SetProperties = map[string]string{}
+				}
+				in.SetProperties[name] = val
+			}
 			for _, p := range pins {
 				ga, v, ok := strings.Cut(p, "=")
 				g, a, ok2 := strings.Cut(ga, ":")
@@ -104,9 +116,11 @@ Un fichier ghc-web-1.2.3-promoted-from.txt trace la provenance (--no-marker pour
 	f.StringVar(&in.Build, "build", "", "build du snapshot à promouvoir : 43 ou 20260914.070210-43 (défaut : le plus récent)")
 	f.StringArrayVar(&pins, "pin", nil, "réécrit une référence -SNAPSHOT du pom : groupId:artifactId=version (répétable)")
 	f.BoolVar(&in.AllowSnapshotRefs, "allow-snapshot-refs", false, "autorise les références -SNAPSHOT restantes dans le pom")
+	f.StringArrayVar(&setProps, "set-property", nil, "fixe une propriété du pom (dans toute la chaîne --with-parent) : nom=valeur (répétable)")
+	f.BoolVar(&in.ReleaseProperties, "release-properties", false, "retire -SNAPSHOT des propriétés de version restantes (4.1.0-0-SNAPSHOT → 4.1.0-0) ; avertit si l'artifact visé est absent de la release")
 	f.BoolVar(&in.AlignProperties, "align-properties", false, "reprend les valeurs des propriétés -SNAPSHOT depuis le pom déjà publié en release à la version cible")
 	f.BoolVar(&in.WithParent, "with-parent", false, "promeut aussi les parents -SNAPSHOT du pom (ancêtres d'abord) et fige la référence")
-	f.BoolVar(&in.NoMarker, "no-marker", false, "n'ajoute pas le fichier -promoted-from.txt")
+	f.BoolVar(&in.NoMarker, "no-marker", false, "n'ajoute pas le fichier de traçabilité -promoted-from-<version d'origine>.txt")
 	f.BoolVar(&in.DeleteSource, "delete-source", false, "supprime la source après copie vérifiée")
 	return c
 }
@@ -115,7 +129,7 @@ Un fichier ghc-web-1.2.3-promoted-from.txt trace la provenance (--no-marker pour
 func blockingProblems(p *module.PromotePlan, dst string) []string {
 	var out []string
 	if refs := p.BlockingRefs(); len(refs) > 0 {
-		out = append(out, fmt.Sprintf("le pom référence %d version(s) -SNAPSHOT (voir ci-dessus)\n  %s --pin groupId:artifactId=version les fige (parent, dépendances) ; --align-properties reprend les propriétés de la release existante ; --allow-snapshot-refs passe outre", len(refs), env.Arrow()))
+		out = append(out, fmt.Sprintf("le pom référence %d version(s) -SNAPSHOT (voir ci-dessus)\n  %s --pin groupId:artifactId=version fige un parent/une dépendance ; --set-property nom=valeur ou --release-properties fixent les propriétés ; --align-properties reprend celles de la release existante ; --allow-snapshot-refs passe outre", len(refs), env.Arrow()))
 	}
 	if n := len(p.Blocking()); n > 0 {
 		out = append(out, fmt.Sprintf("%d fichier(s) existent déjà dans %s avec un contenu différent\n  %s %s", n, dst, env.Arrow(), conflictHint(p, dst)))

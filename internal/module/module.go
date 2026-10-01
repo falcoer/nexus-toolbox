@@ -71,20 +71,22 @@ type Pin struct {
 }
 
 type PromoteInput struct {
-	Group             string   `json:"group"`
-	Artifact          string   `json:"artifact"`
-	Version           string   `json:"version"`              // 1.2.3, 1.2.3-SNAPSHOT or 1.2.3-20260914.070210-43
-	AsVersion         string   `json:"as_version,omitempty"` // target version (default: source without -SNAPSHOT)
-	Build             string   `json:"build,omitempty"`      // snapshot build: "43" or "20260914.070210-43"
-	Pins              []Pin    `json:"pins,omitempty"`
-	AllowSnapshotRefs bool     `json:"allow_snapshot_refs,omitempty"`
-	NoMarker          bool     `json:"no_marker,omitempty"`
-	AlignProperties   bool     `json:"align_properties,omitempty"` // take SNAPSHOT property values from the pom already released at the target
-	WithParent        bool     `json:"with_parent,omitempty"`      // also promote SNAPSHOT parent poms, ancestors first
-	Ancestors         []string `json:"-"`                          // group:artifact chain being planned (cycle/depth guard)
-	Force             bool     `json:"force,omitempty"`
-	DeleteSource      bool     `json:"delete_source,omitempty"`
-	Tool              string   `json:"-"` // "nexus-toolbox x.y.z", written in the marker file
+	Group             string            `json:"group"`
+	Artifact          string            `json:"artifact"`
+	Version           string            `json:"version"`              // 1.2.3, 1.2.3-SNAPSHOT or 1.2.3-20260914.070210-43
+	AsVersion         string            `json:"as_version,omitempty"` // target version (default: source without -SNAPSHOT)
+	Build             string            `json:"build,omitempty"`      // snapshot build: "43" or "20260914.070210-43"
+	Pins              []Pin             `json:"pins,omitempty"`
+	AllowSnapshotRefs bool              `json:"allow_snapshot_refs,omitempty"`
+	NoMarker          bool              `json:"no_marker,omitempty"`
+	SetProperties     map[string]string `json:"set_properties,omitempty"`     // --set-property name=value
+	ReleaseProperties bool              `json:"release_properties,omitempty"` // strip -SNAPSHOT from remaining SNAPSHOT properties
+	AlignProperties   bool              `json:"align_properties,omitempty"`   // take SNAPSHOT property values from the pom already released at the target
+	WithParent        bool              `json:"with_parent,omitempty"`        // also promote SNAPSHOT parent poms, ancestors first
+	Ancestors         []string          `json:"-"`                            // group:artifact chain being planned (cycle/depth guard)
+	Force             bool              `json:"force,omitempty"`
+	DeleteSource      bool              `json:"delete_source,omitempty"`
+	Tool              string            `json:"-"` // "nexus-toolbox x.y.z", written in the marker file
 }
 
 const (
@@ -117,6 +119,7 @@ type PromotePlan struct {
 	Artifact          string         `json:"artifact"`
 	Version           string         `json:"version"` // as requested
 	SourceVersion     string         `json:"source_version"`
+	OriginVersion     string         `json:"origin_version,omitempty"` // exact source version, e.g. 1.0-20260930.120201-1 (used in the marker name)
 	SourceBuild       string         `json:"source_build,omitempty"`
 	Builds            []string       `json:"available_builds,omitempty"`
 	TargetVersion     string         `json:"target_version"`
@@ -125,6 +128,8 @@ type PromotePlan struct {
 	SourceID          string         `json:"source_component_id,omitempty"`
 	Parents           []*PromotePlan `json:"parents,omitempty"` // SNAPSHOT parents to promote first (highest ancestor first)
 	WritePolicy       string         `json:"destination_write_policy,omitempty"`
+	PinsUsed          []string       `json:"-"`               // pins that changed a pom of the chain
+	PropsUsed         []string       `json:"-"`               // --set-property names found in a pom of the chain
 	Notes             []string       `json:"notes,omitempty"` // diagnostics (provenance of an existing release…)
 	Items             []PlanItem     `json:"items"`
 	SnapshotRefs      []string       `json:"unresolved_snapshot_refs,omitempty"`

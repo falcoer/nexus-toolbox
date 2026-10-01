@@ -173,7 +173,7 @@ func (m *Module) PlanPromote(ctx context.Context, src, dst module.Target, in mod
 		return nil, fmt.Errorf("%s:%s:%s sans fichier exploitable", in.Group, in.Artifact, in.Version)
 	}
 	plan := &module.PromotePlan{Group: in.Group, Artifact: in.Artifact, Version: in.Version,
-		SourceVersion: res.sourceVersion, SourceBuild: res.sourceBuild, Builds: res.builds, TargetVersion: target,
+		SourceVersion: res.sourceVersion, OriginVersion: res.fileVersion, SourceBuild: res.sourceBuild, Builds: res.builds, TargetVersion: target,
 		Source: src.Repo.Name, Destination: dst.Repo.Name, Force: in.Force, DeleteSource: in.DeleteSource,
 		AllowSnapshotRefs: in.AllowSnapshotRefs, Tool: in.Tool}
 	if len(res.componentIDs) == 1 {
@@ -227,7 +227,13 @@ func (m *Module) PlanPromote(ctx context.Context, src, dst module.Target, in mod
 	if !hasPom {
 		plan.Warnings = append(plan.Warnings, "aucun .pom trouvé pour ce build : la release serait inutilisable par Maven")
 	}
-	if res.fileVersion != target {
+	hasBinary := false
+	for _, f := range res.files {
+		if f.Rest != ".pom" {
+			hasBinary = true
+		}
+	}
+	if hasBinary && res.fileVersion != target {
 		plan.Warnings = append(plan.Warnings, fmt.Sprintf("les binaires (.war, .jar…) sont copiés tels quels : leurs métadonnées internes (META-INF) peuvent encore mentionner %s", res.sourceVersion))
 	}
 
@@ -242,17 +248,25 @@ func (m *Module) PlanPromote(ctx context.Context, src, dst module.Target, in mod
 			diagnoseConflict(ctx, dst, &plan.Items[i])
 		}
 	}
+	markerPath := dstPath(markerSuffix(plan.OriginVersion))
+	existingMarker := ""
+	if conflicts > 0 || !in.NoMarker {
+		existingMarker = findExistingMarker(ctx, dst, in.Group, in.Artifact, target)
+	}
 	if conflicts > 0 {
-		noteExistingRelease(ctx, dst, plan, dstPath("-"+markerClassifier+".txt"))
+		noteExistingRelease(ctx, dst, plan, existingMarker, markerPath)
 	}
 	// Order: binaries first, pom last, marker very last.
 	sort.SliceStable(plan.Items, func(i, j int) bool {
 		return strings.HasSuffix(plan.Items[j].Path, ".pom") && !strings.HasSuffix(plan.Items[i].Path, ".pom")
 	})
 	if !in.NoMarker {
-		mk := module.PlanItem{Kind: module.KindMarker, Path: dstPath("-" + markerClassifier + ".txt")}
-		classifyMarker(ctx, dst, &mk, in.Force, forceAllowed)
+		mk := module.PlanItem{Kind: module.KindMarker, Path: markerPath}
+		classifyMarker(ctx, dst, &mk, in.Force, forceAllowed, existingMarker)
 		plan.Items = append(plan.Items, mk)
+	}
+	if len(in.Ancestors) == 0 {
+		finalizeUsage(plan, in)
 	}
 	return plan, nil
 }
@@ -272,7 +286,8 @@ func (m *Module) rewritePomItem(ctx context.Context, src, dst module.Target, it 
 	if in.AlignProperties {
 		props = remoteProps(ctx, dst, it.Path)
 	}
-	pr, err := RewritePomOpts(raw, target, pins, props)
+	opts := PomOpts{Set: in.SetProperties, Aligned: props, StripSnapshot: in.ReleaseProperties}
+	pr, err := RewritePomOpts(raw, target, pins, opts)
 	if err != nil {
 		return err
 	}
@@ -290,6 +305,7 @@ func (m *Module) rewritePomItem(ctx context.Context, src, dst module.Target, it 
 		pin, explicit := findPin(in.Pins, par.Group, par.Artifact)
 		sub := module.PromoteInput{Group: par.Group, Artifact: par.Artifact, Version: par.Version,
 			Pins: in.Pins, AllowSnapshotRefs: in.AllowSnapshotRefs, AlignProperties: in.AlignProperties,
+			SetProperties: in.SetProperties, ReleaseProperties: in.ReleaseProperties,
 			NoMarker: in.NoMarker, Force: in.Force,
 			WithParent: true, Tool: in.Tool, Ancestors: append(append([]string(nil), in.Ancestors...), in.Group+":"+in.Artifact)}
 		if explicit {
@@ -301,12 +317,14 @@ func (m *Module) rewritePomItem(ctx context.Context, src, dst module.Target, it 
 		}
 		// flatten: ancestors first, then this parent
 		plan.Parents = append(plan.Parents, pp.Parents...)
+		plan.PinsUsed = append(plan.PinsUsed, pp.PinsUsed...)
+		plan.PropsUsed = append(plan.PropsUsed, pp.PropsUsed...)
 		pp.Parents = nil
 		plan.Parents = append(plan.Parents, pp)
 		if !explicit {
 			pins = append(append([]module.Pin(nil), in.Pins...), module.Pin{Group: par.Group, Artifact: par.Artifact, Version: pp.TargetVersion})
 		}
-		if pr, err = RewritePomOpts(raw, target, pins, props); err != nil {
+		if pr, err = RewritePomOpts(raw, target, pins, opts); err != nil {
 			return err
 		}
 	} else if pr.Parent != nil {
@@ -315,9 +333,17 @@ func (m *Module) rewritePomItem(ctx context.Context, src, dst module.Target, it 
 	if !pr.HasVersion && pr.Parent == nil {
 		plan.Warnings = append(plan.Warnings, "le pom ne déclare pas de <version> propre (héritée du parent) : rien à réécrire")
 	}
+	unused := map[string]bool{}
 	for _, p := range pr.UnusedPins {
-		plan.Warnings = append(plan.Warnings, "--pin sans effet (aucune référence SNAPSHOT correspondante) : "+p)
+		unused[p] = true
 	}
+	for _, p := range in.Pins {
+		if k := pinKey(p); !unused[k] {
+			plan.PinsUsed = append(plan.PinsUsed, k)
+		}
+	}
+	plan.PropsUsed = append(plan.PropsUsed, pr.SetUsed...)
+	verifyPropertyArtifacts(ctx, dst, plan, pr)
 	plan.SnapshotRefs = append(plan.SnapshotRefs, pr.Refs...)
 	it.Content, it.Size, it.SHA1 = pr.Out, int64(len(pr.Out)), sha1Hex(pr.Out)
 	it.Transformed, it.Diff = !bytes.Equal(pr.Out, raw), pr.Diff
@@ -331,7 +357,7 @@ func remoteProps(ctx context.Context, dst module.Target, p string) map[string]st
 	if err != nil {
 		return nil
 	}
-	r, err := RewritePomOpts(b, "", nil, nil)
+	r, err := RewritePomOpts(b, "", nil, PomOpts{})
 	if err != nil {
 		return nil
 	}
@@ -354,11 +380,49 @@ func diagnoseConflict(ctx context.Context, dst module.Target, it *module.PlanIte
 	}
 }
 
+// findExistingMarker looks for a promotion marker (any origin version) of the release already
+// published at the target version; it returns its repository path, or "".
+func findExistingMarker(ctx context.Context, dst module.Target, group, artifact, version string) string {
+	q := url.Values{"repository": {dst.Repo.Name}, "group": {group}, "name": {artifact}, "version": {version}}
+	token := ""
+	for page := 0; page < 5; page++ {
+		res, err := dst.Client.SearchComponents(ctx, q, token)
+		if err != nil {
+			return ""
+		}
+		for _, c := range res.Items {
+			if c.Group != group || c.Name != artifact || c.Version != version {
+				continue
+			}
+			for _, a := range c.Assets {
+				if isMarkerName(path.Base(a.Path)) {
+					return a.Path
+				}
+			}
+		}
+		if token = res.ContinuationToken; token == "" {
+			break
+		}
+	}
+	return ""
+}
+
 // noteExistingRelease records whether the existing release was produced by this tool.
-func noteExistingRelease(ctx context.Context, dst module.Target, plan *module.PromotePlan, markerPath string) {
-	b, err := dst.Client.GetBytes(ctx, dst.Client.RepoURL(dst.Repo.Name, markerPath))
-	if err != nil {
-		plan.Notes = append(plan.Notes, fmt.Sprintf("la release %s existante n'a pas été produite par nexus (pas de fichier -%s.txt)", plan.TargetVersion, markerClassifier))
+// existing is the marker found by search; fallback is the marker name this run would write
+// (checked directly, since the search index can lag behind).
+func noteExistingRelease(ctx context.Context, dst module.Target, plan *module.PromotePlan, existing, fallback string) {
+	if existing == "" {
+		if _, err := dst.Client.GetText(ctx, dst.Client.RepoURL(dst.Repo.Name, fallback+".sha1")); err == nil {
+			existing = fallback
+		}
+	}
+	var b []byte
+	var err error
+	if existing != "" {
+		b, err = dst.Client.GetBytes(ctx, dst.Client.RepoURL(dst.Repo.Name, existing))
+	}
+	if existing == "" || err != nil {
+		plan.Notes = append(plan.Notes, fmt.Sprintf("la release %s existante n'a pas été produite par nexus (pas de fichier -%s-….txt)", plan.TargetVersion, markerClassifier))
 		return
 	}
 	var keep []string
@@ -395,6 +459,59 @@ func parentError(ctx context.Context, dst module.Target, par *ParentRef, err err
 		}
 	}
 	return fmt.Errorf("parent %s:%s:%s : %w\n  → %s", par.Group, par.Artifact, par.Version, err, hint)
+}
+
+func pinKey(p module.Pin) string { return p.Group + ":" + p.Artifact + "=" + p.Version }
+
+// verifyPropertyArtifacts warns when an artifact whose version comes from a rewritten
+// property is absent from the destination (the release would not be resolvable).
+func verifyPropertyArtifacts(ctx context.Context, dst module.Target, plan *module.PromotePlan, pr *PomResult) {
+	names := make([]string, 0, len(pr.Changed))
+	for n := range pr.Changed {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		v := pr.Changed[name]
+		for _, u := range pr.PropUsers[name] {
+			if u.Group == "" || u.Artifact == "" || strings.Contains(u.Group+u.Artifact, "${") || strings.Contains(v, "${") {
+				continue
+			}
+			if !releasedInDestination(ctx, dst, u.Group, u.Artifact, v) {
+				plan.Warnings = append(plan.Warnings, fmt.Sprintf("propriété %s → %s : %s:%s:%s est absent de %s (la release ne serait pas résolvable)", name, v, u.Group, u.Artifact, v, dst.Repo.Alias))
+			}
+		}
+	}
+}
+
+// finalizeUsage emits the once-per-run warnings about pins and properties that changed nothing.
+func finalizeUsage(plan *module.PromotePlan, in module.PromoteInput) {
+	used := map[string]bool{}
+	for _, k := range plan.PinsUsed {
+		used[k] = true
+	}
+	for _, pl := range append(append([]*module.PromotePlan{}, plan.Parents...), plan) {
+		used[pl.Group+":"+pl.Artifact+"="+pl.TargetVersion] = true // the pin names a promoted artifact
+	}
+	for _, p := range in.Pins {
+		if !used[pinKey(p)] {
+			plan.Warnings = append(plan.Warnings, "--pin sans effet (aucune référence SNAPSHOT correspondante dans la chaîne) : "+pinKey(p))
+		}
+	}
+	seen := map[string]bool{}
+	for _, n := range plan.PropsUsed {
+		seen[n] = true
+	}
+	var names []string
+	for n := range in.SetProperties {
+		if !seen[n] {
+			names = append(names, n)
+		}
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		plan.Warnings = append(plan.Warnings, "--set-property sans effet (propriété absente de la chaîne) : "+n)
+	}
 }
 
 func findPin(pins []module.Pin, g, a string) (module.Pin, bool) {
@@ -444,16 +561,21 @@ func classify(ctx context.Context, dst module.Target, it *module.PlanItem, force
 	}
 }
 
-// classifyMarker never conflicts: an existing marker is kept (its content embeds a date).
-func classifyMarker(ctx context.Context, dst module.Target, it *module.PlanItem, force, forceAllowed bool) {
-	_, err := dst.Client.GetText(ctx, dst.Client.RepoURL(dst.Repo.Name, it.Path+".sha1"))
+// classifyMarker never conflicts: an existing marker (whatever its origin version) is kept,
+// since its content embeds a date. existing is the marker found in the destination, if any.
+func classifyMarker(ctx context.Context, dst module.Target, it *module.PlanItem, force, forceAllowed bool, existing string) {
+	if existing == "" {
+		if _, err := dst.Client.GetText(ctx, dst.Client.RepoURL(dst.Repo.Name, it.Path+".sha1")); err == nil {
+			existing = it.Path
+		}
+	}
 	switch {
-	case err == nil && force && forceAllowed:
-		it.Action, it.Reason = "copy", "remplace le marqueur existant (--force)"
-	case err == nil:
-		it.Action, it.Reason = "skip", "marqueur déjà présent, conservé"
-	default:
+	case existing == "":
 		it.Action = "copy"
+	case existing == it.Path && force && forceAllowed:
+		it.Action, it.Reason = "copy", "remplace le marqueur existant (--force)"
+	default:
+		it.Action, it.Reason = "skip", "marqueur déjà présent ("+path.Base(existing)+"), conservé"
 	}
 }
 
@@ -549,6 +671,7 @@ func (m *Module) ExecutePromote(ctx context.Context, src, dst module.Target, pla
 		res.Warnings = append(res.Warnings, fmt.Sprintf("maven-metadata.xml de %s:%s ne liste pas encore %s : lancez la tâche Nexus « Rebuild Maven repository metadata »", plan.Group, plan.Artifact, plan.TargetVersion))
 	}
 
+	markerFailed := false
 	if marker != nil && marker.Action == "copy" {
 		body := BuildMarker(plan, src.Repo.URL, dst.Client.User, time.Now())
 		rep.AssetStart(marker.Path, int64(len(body)))
@@ -564,13 +687,17 @@ func (m *Module) ExecutePromote(ctx context.Context, src, dst module.Target, pla
 		}
 		rep.AssetDone(marker.Path, err)
 		if err != nil {
-			res.Failed = append(res.Failed, fmt.Sprintf("%s : %v", marker.Path, err))
-			return res, module.ErrPartial
+			// the artifact itself is promoted and verified: report, don't fail; a re-run retries the marker
+			markerFailed = true
+			res.Warnings = append(res.Warnings, fmt.Sprintf("fichier de traçabilité non écrit (%s : %v) : relancez la même commande pour le réécrire", path.Base(marker.Path), err))
+		} else {
+			res.MarkerWritten = true
 		}
-		res.MarkerWritten = true
 	}
 
-	if plan.DeleteSource {
+	if plan.DeleteSource && markerFailed {
+		res.Warnings = append(res.Warnings, "suppression de la source ignorée : le fichier de traçabilité n'a pas pu être écrit")
+	} else if plan.DeleteSource {
 		if err := src.Client.DeleteComponent(ctx, plan.SourceID); err != nil {
 			return res, fmt.Errorf("copie vérifiée mais suppression de la source impossible : %w", err)
 		}

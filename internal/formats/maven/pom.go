@@ -19,7 +19,17 @@ type PomResult struct {
 	UnusedPins []string
 	HasVersion bool // the pom declares its own <version>
 	Parent     *ParentRef
-	Props      map[string]string // every <properties> entry, as found
+	Props      map[string]string      // every <properties> entry, as found
+	Changed    map[string]string      // properties rewritten: name → new value
+	PropUsers  map[string][]ParentRef // property → parent/dependency/plugin coordinates using ${property} as version
+	SetUsed    []string               // --set-property names found in this pom
+}
+
+// PomOpts tunes property rewriting. Precedence: Set > Aligned > Strip.
+type PomOpts struct {
+	Set           map[string]string // explicit values (--set-property), applied whatever the current value
+	Aligned       map[string]string // values taken from the release already published (--align-properties)
+	StripSnapshot bool              // --release-properties: drop "-SNAPSHOT" from remaining SNAPSHOT properties
 }
 
 // ParentRef is the <parent> declared by a pom (as found, before any pin).
@@ -44,20 +54,19 @@ type coordCtx struct {
 // SNAPSHOT parent/dependency/plugin references. It only splices the bytes of the
 // affected values, so formatting, comments and line endings are preserved.
 func RewritePom(src []byte, newVersion string, pins []module.Pin) (*PomResult, error) {
-	return RewritePomOpts(src, newVersion, pins, nil)
+	return RewritePomOpts(src, newVersion, pins, PomOpts{})
 }
 
-// RewritePomOpts is RewritePom with property overrides: a SNAPSHOT property listed in
-// props (with a non-SNAPSHOT value) is replaced. An empty newVersion leaves the project
-// version untouched (read-only use, e.g. to collect Props).
-func RewritePomOpts(src []byte, newVersion string, pins []module.Pin, props map[string]string) (*PomResult, error) {
+// RewritePomOpts is RewritePom with property rewriting (see PomOpts). An empty newVersion
+// leaves the project version untouched (read-only use, e.g. to collect Props).
+func RewritePomOpts(src []byte, newVersion string, pins []module.Pin, opts PomOpts) (*PomResult, error) {
 	dec := xml.NewDecoder(bytes.NewReader(src))
 	dec.Strict = false
 	var (
 		path  []string
 		ctxs  []*coordCtx
 		edits []edit
-		res   = &PomResult{Props: map[string]string{}}
+		res   = &PomResult{Props: map[string]string{}, Changed: map[string]string{}, PropUsers: map[string][]ParentRef{}}
 		used  = map[int]bool{}
 		prev  int
 		// text capture for leaf elements we care about
@@ -127,10 +136,24 @@ func RewritePomOpts(src []byte, newVersion string, pins []module.Pin, props map[
 				case "prop":
 					name := path[len(path)-1]
 					res.Props[name] = val
-					if IsSnapshot(val) {
-						if nv, ok := props[name]; ok && nv != "" && !IsSnapshot(nv) {
+					apply := func(nv, why string) {
+						if nv != val {
 							edits = append(edits, edit{start, end, nv})
-							res.Diff = append(res.Diff, fmt.Sprintf("propriété %s : %s → %s (valeur de la release existante)", name, val, nv))
+							res.Changed[name] = nv
+							res.Diff = append(res.Diff, fmt.Sprintf("propriété %s : %s → %s (%s)", name, val, nv, why))
+						}
+						if IsSnapshot(nv) {
+							res.Refs = append(res.Refs, fmt.Sprintf("propriété %s = %s", name, nv))
+						}
+					}
+					if nv, ok := opts.Set[name]; ok {
+						res.SetUsed = append(res.SetUsed, name)
+						apply(nv, "--set-property")
+					} else if IsSnapshot(val) {
+						if nv, ok := opts.Aligned[name]; ok && nv != "" && !IsSnapshot(nv) {
+							apply(nv, "valeur de la release existante")
+						} else if opts.StripSnapshot {
+							apply(val[:len(val)-len("-SNAPSHOT")], "-SNAPSHOT retiré")
 						} else {
 							res.Refs = append(res.Refs, fmt.Sprintf("propriété %s = %s", name, val))
 						}
@@ -143,6 +166,10 @@ func RewritePomOpts(src []byte, newVersion string, pins []module.Pin, props map[
 			if len(ctxs) > 0 && ctxs[len(ctxs)-1].depth == n {
 				c := ctxs[len(ctxs)-1]
 				ctxs = ctxs[:len(ctxs)-1]
+				if v := strings.TrimSpace(c.version); strings.HasPrefix(v, "${") && strings.HasSuffix(v, "}") {
+					name := v[2 : len(v)-1]
+					res.PropUsers[name] = append(res.PropUsers[name], ParentRef{Group: c.group, Artifact: c.artifact})
+				}
 				if c.kind == "parent" {
 					res.Parent = &ParentRef{c.group, c.artifact, c.version}
 				}

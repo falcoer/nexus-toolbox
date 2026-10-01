@@ -57,9 +57,11 @@ Nexus 3 OSS ne propose pas d'API de promotion (staging = Pro). `promote` = **ren
 2. **plan** (`promote.go`, aucune écriture) : validations (hosted, version/write policy de la destination), chemin de destination de chaque fichier, pom réécrit en mémoire (`pom.go`, découpe aux offsets), sha1 attendu, détection fichier par fichier via `GET <dst>/<path>.sha1` (absent → copier, identique → ignorer, différent → conflit), références SNAPSHOT ;
 3. **copie** : binaires streamés via fichier temporaire (sha1 recalculé et comparé à la source), pom envoyé depuis la mémoire, `PUT` sur le chemin Maven de la destination (Nexus génère checksums et métadonnées) ;
 4. **vérification** : sha1 servi par la destination = sha1 attendu ; lecture de `maven-metadata.xml` ;
-5. **marqueur** `-promoted-from.txt` (`marker.go`), puis `--delete-source` du composant promu si tout est vérifié.
+5. **marqueur** `-promoted-from-<version d'origine>.txt` (`marker.go` ; un marqueur existant, de n'importe quelle origine, est conservé ; son échec n'invalide pas la promotion), puis `--delete-source` du composant promu si tout est vérifié.
 
 Avec `--with-parent`, `PlanPromote` se rappelle récursivement pour chaque `<parent>` SNAPSHOT (garde de cycle et profondeur max 5) : le plan contient `Parents` (ancêtre le plus haut d'abord), `ExecutePromote` les exécute avant l'artifact principal et refuse tout dès qu'un conflit ou une référence SNAPSHOT bloque l'un des plans.
+
+Propriétés de version SNAPSHOT : `PomOpts{Set, Aligned, StripSnapshot}` (priorité dans cet ordre) ; `PomResult.PropUsers` associe chaque propriété aux coordonnées qui l'utilisent comme version, ce qui permet de vérifier leur présence dans la destination. Les avertissements « pin / set-property sans effet » sont calculés une fois pour toute la chaîne (`finalizeUsage`).
 
 Relancer la commande reprend là où elle s'est arrêtée (fichiers identiques ignorés, marqueur existant conservé).
 

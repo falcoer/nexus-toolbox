@@ -10,6 +10,15 @@ import (
 
 const markerClassifier = "promoted-from"
 
+// markerSuffix is the end of the marker file name: "-promoted-from-<origin version>.txt",
+// where the origin is the exact source version (timestamped snapshot build or release).
+func markerSuffix(origin string) string { return "-" + markerClassifier + "-" + origin + ".txt" }
+
+// isMarkerName reports whether a file name (any origin) is a promotion marker.
+func isMarkerName(name string) bool {
+	return strings.Contains(name, "-"+markerClassifier+"-") && strings.HasSuffix(name, ".txt")
+}
+
 // BuildMarker renders the traceability file uploaded next to the promoted artifact.
 func BuildMarker(plan *module.PromotePlan, srcURL, by string, now time.Time) []byte {
 	var b strings.Builder

@@ -50,7 +50,7 @@ func TestConflictDiagnosticsOnPom(t *testing.T) {
 
 func TestExistingReleasePromotedByNexusIsReported(t *testing.T) {
 	f := existingReleaseFake(t)
-	f.dst["com/acme/par/03.27.10-0/par-03.27.10-0-promoted-from.txt"] = "source-version: 03.27.10-0-SNAPSHOT\nsource-build: 20260914.050000-1\npromoted-at: 2026-09-14T14:00:00Z\nsecret: no\n"
+	f.dst["com/acme/par/03.27.10-0/par-03.27.10-0-promoted-from-03.27.10-0-20260914.050000-1.txt"] = "source-version: 03.27.10-0-SNAPSHOT\nsource-build: 20260914.050000-1\npromoted-at: 2026-09-14T14:00:00Z\nsecret: no\n"
 	src, dst := f.targets()
 	plan, err := New().PlanPromote(context.Background(), src, dst, parIn())
 	if err != nil {

@@ -146,7 +146,7 @@ func TestEndToEnd(t *testing.T) {
 	out, e, err = run(t, "promote", "snap", "rel", "com.acme:ghc:1.0-SNAPSHOT", "--yes", "-o", "json")
 	t.Log("\n" + e)
 	if err != nil || dst["com/acme/ghc/1.0/ghc-1.0.war"] != "JAR" || !strings.Contains(dst["com/acme/ghc/1.0/ghc-1.0.pom"], "<version>1.0</version>") ||
-		!strings.Contains(out, `"target_version": "1.0"`) || !strings.Contains(dst["com/acme/ghc/1.0/ghc-1.0-promoted-from.txt"], "source-build: 20260914.091709-45") {
+		!strings.Contains(out, `"target_version": "1.0"`) || !strings.Contains(dst["com/acme/ghc/1.0/ghc-1.0-promoted-from-1.0-20260914.091709-45.txt"], "source-build: 20260914.091709-45") {
 		t.Fatalf("snapshot promote: %v\n%s\n%v", err, out, dst)
 	}
 	// an existing release with different content is explained, and every blocker is reported

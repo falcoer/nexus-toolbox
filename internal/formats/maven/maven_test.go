@@ -56,6 +56,24 @@ func newFake(t *testing.T, policy string) *fake {
 		{"name":"dst","format":"maven2","type":"hosted","attributes":{"maven":{"versionPolicy":"RELEASE"},"storage":{"writePolicy":%q}}}]`, f.dstPW)
 	})
 	mux.HandleFunc("/service/rest/v1/search", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("repository") == "dst" { // lists what the destination holds
+			q := r.URL.Query()
+			prefix := strings.ReplaceAll(q.Get("group"), ".", "/") + "/" + q.Get("name") + "/" + q.Get("version") + "/"
+			f.mu.Lock()
+			var assets []nexus.Asset
+			for p := range f.dst {
+				if strings.HasPrefix(p, prefix) {
+					assets = append(assets, nexus.Asset{Path: p, DownloadURL: f.srv.URL + "/repository/dst/" + p})
+				}
+			}
+			f.mu.Unlock()
+			items := []nexus.Component{}
+			if len(assets) > 0 {
+				items = append(items, nexus.Component{Group: q.Get("group"), Name: q.Get("name"), Version: q.Get("version"), Assets: assets})
+			}
+			json.NewEncoder(w).Encode(nexus.ComponentPage{Items: items})
+			return
+		}
 		if r.URL.Query().Get("maven.baseVersion") != "" {
 			var items []nexus.Component
 			for _, c := range f.snap {

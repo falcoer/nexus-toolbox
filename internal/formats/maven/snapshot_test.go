@@ -66,7 +66,7 @@ func TestPromoteSnapshotLatestBuild(t *testing.T) {
 	for _, it := range plan.Items {
 		paths = append(paths, it.Path)
 	}
-	want := "com/acme/ghc-web/03.27.10-0/ghc-web-03.27.10-0.war,com/acme/ghc-web/03.27.10-0/ghc-web-03.27.10-0.pom,com/acme/ghc-web/03.27.10-0/ghc-web-03.27.10-0-promoted-from.txt"
+	want := "com/acme/ghc-web/03.27.10-0/ghc-web-03.27.10-0.war,com/acme/ghc-web/03.27.10-0/ghc-web-03.27.10-0.pom,com/acme/ghc-web/03.27.10-0/ghc-web-03.27.10-0-promoted-from-03.27.10-0-20260914.091709-45.txt"
 	if strings.Join(paths, ",") != want {
 		t.Fatalf("paths %v", paths)
 	}
@@ -81,7 +81,7 @@ func TestPromoteSnapshotLatestBuild(t *testing.T) {
 	if !strings.Contains(f.dst[d+".pom"], "<version>03.27.10-0</version>") || strings.Contains(f.dst[d+".pom"], "SNAPSHOT") {
 		t.Errorf("pom not rewritten: %q", f.dst[d+".pom"])
 	}
-	mk := f.dst[d+"-promoted-from.txt"]
+	mk := f.dst[d+"-promoted-from-03.27.10-0-20260914.091709-45.txt"]
 	for _, s := range []string{"source-version: 03.27.10-0-SNAPSHOT", "source-build: 20260914.091709-45", "target-version: 03.27.10-0", "promoted-by: u", "binaire inchangé", "nexus-toolbox test"} {
 		if !strings.Contains(mk, s) {
 			t.Errorf("marker lacks %q:\n%s", s, mk)
@@ -179,7 +179,7 @@ func TestPromoteMarkerResumeAndConflict(t *testing.T) {
 	if _, err := New().ExecutePromote(context.Background(), src, dst, plan, noRep{}); err != nil {
 		t.Fatal(err)
 	}
-	mk := "com/acme/ghc-web/03.27.10-0/ghc-web-03.27.10-0-promoted-from.txt"
+	mk := "com/acme/ghc-web/03.27.10-0/ghc-web-03.27.10-0-promoted-from-03.27.10-0-20260914.091709-45.txt"
 	first := f.dst[mk]
 	// second run: everything identical → nothing rewritten, marker kept
 	plan, _ = New().PlanPromote(context.Background(), src, dst, snapIn)
@@ -205,5 +205,84 @@ func TestMetadataWarning(t *testing.T) {
 	res, err := New().ExecutePromote(context.Background(), src, dst, plan, noRep{})
 	if err != nil || res.MetadataOK || len(res.Warnings) != 1 {
 		t.Fatalf("fake serves no maven-metadata.xml: %+v %v", res, err)
+	}
+}
+
+func TestMarkerNameCarriesOriginVersion(t *testing.T) {
+	f := snapFake(t, "ALLOW", snapPom)
+	src, dst := f.targets()
+	i := snapIn
+	i.Build, i.AsVersion = "43", "03.27.10-1"
+	plan, err := New().PlanPromote(context.Background(), src, dst, i)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mk := plan.Items[len(plan.Items)-1]
+	if mk.Kind != module.KindMarker || mk.Path != "com/acme/ghc-web/03.27.10-1/ghc-web-03.27.10-1-promoted-from-03.27.10-0-20260914.070210-43.txt" {
+		t.Fatalf("marker: %+v", mk)
+	}
+	if plan.OriginVersion != "03.27.10-0-20260914.070210-43" {
+		t.Errorf("origin: %q", plan.OriginVersion)
+	}
+	// release → release: the origin is the released version
+	f2 := newFake(t, "ALLOW")
+	s2, d2 := f2.targets()
+	r := module.PromoteInput{Group: "com.acme", Artifact: "lib", Version: "1.0", AsVersion: "1.0-rc1"}
+	plan, err = New().PlanPromote(context.Background(), s2, d2, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := plan.Items[len(plan.Items)-1].Path; got != "com/acme/lib/1.0-rc1/lib-1.0-rc1-promoted-from-1.0.txt" {
+		t.Errorf("release marker: %s", got)
+	}
+}
+
+func TestExistingMarkerOfAnotherOriginIsKept(t *testing.T) {
+	f := snapFake(t, "ALLOW", snapPom)
+	src, dst := f.targets()
+	old := "com/acme/ghc-web/03.27.10-0/ghc-web-03.27.10-0-promoted-from-03.27.10-0-20260914.070210-43.txt"
+	f.dst[old] = "source-version: 03.27.10-0-SNAPSHOT\nsource-build: 20260914.070210-43\n"
+	plan, err := New().PlanPromote(context.Background(), src, dst, snapIn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mk := plan.Items[len(plan.Items)-1]
+	if mk.Action != "skip" || !strings.Contains(mk.Reason, "promoted-from-03.27.10-0-20260914.070210-43.txt") {
+		t.Fatalf("an existing marker must be kept: %+v", mk)
+	}
+	if _, err := New().ExecutePromote(context.Background(), src, dst, plan, noRep{}); err == nil {
+		// .war/.pom are new files here so the promotion itself succeeds; no second marker may appear
+	}
+	for p := range f.dst {
+		if strings.Contains(p, "promoted-from") && p != old {
+			t.Errorf("second marker written: %s", p)
+		}
+	}
+}
+
+func TestMarkerFailureIsNotFatalButBlocksSourceDeletion(t *testing.T) {
+	f := snapFake(t, "ALLOW", snapPom)
+	f.failOn = "-promoted-from-"
+	src, dst := f.targets()
+	i := snapIn
+	i.DeleteSource = true
+	plan, err := New().PlanPromote(context.Background(), src, dst, i)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := New().ExecutePromote(context.Background(), src, dst, plan, noRep{})
+	if err != nil || res.MarkerWritten || res.SourceDeleted || !res.Verified || res.Copied != 2 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	w := strings.Join(res.Warnings, "|")
+	if !strings.Contains(w, "traçabilité non écrit") || !strings.Contains(w, "suppression de la source ignorée") || len(f.del) != 0 {
+		t.Errorf("warnings=%v del=%v", res.Warnings, f.del)
+	}
+	// a re-run only writes the marker
+	f.failOn = ""
+	plan, _ = New().PlanPromote(context.Background(), src, dst, snapIn)
+	res, err = New().ExecutePromote(context.Background(), src, dst, plan, noRep{})
+	if err != nil || !res.MarkerWritten || res.Copied != 0 || res.Skipped != 2 {
+		t.Fatalf("re-run: %+v %v", res, err)
 	}
 }
