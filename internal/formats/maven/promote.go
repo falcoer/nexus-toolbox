@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -275,17 +276,28 @@ func (m *Module) rewritePomItem(ctx context.Context, src, dst module.Target, it 
 	if err != nil {
 		return err
 	}
-	if par := pr.Parent; par != nil && in.WithParent && IsSnapshot(par.Version) {
+	promoteParent := pr.Parent != nil && in.WithParent && IsSnapshot(pr.Parent.Version)
+	if promoteParent {
+		par := pr.Parent
+		if pin, ok := findPin(in.Pins, par.Group, par.Artifact); ok && releasedInDestination(ctx, dst, par.Group, par.Artifact, pin.Version) {
+			// pinned to a version the destination already holds: nothing to promote, the pin is enough
+			promoteParent = false
+			plan.Notes = append(plan.Notes, fmt.Sprintf("parent %s:%s:%s déjà présent dans %s : référence figée sans promotion", par.Group, par.Artifact, pin.Version, dst.Repo.Alias))
+		}
+	}
+	if promoteParent {
+		par := pr.Parent
 		pin, explicit := findPin(in.Pins, par.Group, par.Artifact)
 		sub := module.PromoteInput{Group: par.Group, Artifact: par.Artifact, Version: par.Version,
-			Pins: in.Pins, AllowSnapshotRefs: in.AllowSnapshotRefs, AlignProperties: in.AlignProperties, NoMarker: in.NoMarker, Force: in.Force,
+			Pins: in.Pins, AllowSnapshotRefs: in.AllowSnapshotRefs, AlignProperties: in.AlignProperties,
+			NoMarker: in.NoMarker, Force: in.Force,
 			WithParent: true, Tool: in.Tool, Ancestors: append(append([]string(nil), in.Ancestors...), in.Group+":"+in.Artifact)}
 		if explicit {
 			sub.AsVersion = pin.Version
 		}
 		pp, err := m.PlanPromote(ctx, src, dst, sub)
 		if err != nil {
-			return fmt.Errorf("parent %s:%s:%s : %w\n  → promouvez-le séparément puis utilisez --pin %s:%s=<version>", par.Group, par.Artifact, par.Version, err, par.Group, par.Artifact)
+			return parentError(ctx, dst, par, err)
 		}
 		// flatten: ancestors first, then this parent
 		plan.Parents = append(plan.Parents, pp.Parents...)
@@ -297,8 +309,8 @@ func (m *Module) rewritePomItem(ctx context.Context, src, dst module.Target, it 
 		if pr, err = RewritePomOpts(raw, target, pins, props); err != nil {
 			return err
 		}
-	} else if par != nil {
-		checkParentInDestination(ctx, dst, plan, par, pins)
+	} else if pr.Parent != nil {
+		checkParentInDestination(ctx, dst, plan, pr.Parent, pins)
 	}
 	if !pr.HasVersion && pr.Parent == nil {
 		plan.Warnings = append(plan.Warnings, "le pom ne déclare pas de <version> propre (héritée du parent) : rien à réécrire")
@@ -358,6 +370,31 @@ func noteExistingRelease(ctx context.Context, dst module.Target, plan *module.Pr
 		}
 	}
 	plan.Notes = append(plan.Notes, "release existante déjà promue par nexus : "+strings.Join(keep, ", "))
+}
+
+// releasedInDestination reports whether g:a:v already has its pom in the destination.
+func releasedInDestination(ctx context.Context, dst module.Target, g, a, v string) bool {
+	p := strings.ReplaceAll(g, ".", "/") + "/" + a + "/" + v + "/" + a + "-" + v + ".pom.sha1"
+	_, err := dst.Client.GetText(ctx, dst.Client.RepoURL(dst.Repo.Name, p))
+	return err == nil
+}
+
+// parentError wraps a parent planning failure with one actionable hint (the innermost
+// failure of a chain carries it; outer levels only add context).
+func parentError(ctx context.Context, dst module.Target, par *ParentRef, err error) error {
+	if strings.Contains(err.Error(), "\n  → ") {
+		return fmt.Errorf("parent %s:%s:%s : %w", par.Group, par.Artifact, par.Version, err)
+	}
+	hint := fmt.Sprintf("promouvez-le séparément puis utilisez --pin %s:%s=<version>", par.Group, par.Artifact)
+	if errors.Is(err, ErrNoBuild) {
+		base := par.Version[:len(par.Version)-len("-SNAPSHOT")]
+		if releasedInDestination(ctx, dst, par.Group, par.Artifact, base) {
+			hint = fmt.Sprintf("%s:%s:%s existe déjà dans %s : utilisez --pin %s:%s=%s", par.Group, par.Artifact, base, dst.Repo.Alias, par.Group, par.Artifact, base)
+		} else {
+			hint = fmt.Sprintf("aucun build snapshot et pas de version %s en release ; si une autre version existe dans %s, utilisez --pin %s:%s=<version>", base, dst.Repo.Alias, par.Group, par.Artifact)
+		}
+	}
+	return fmt.Errorf("parent %s:%s:%s : %w\n  → %s", par.Group, par.Artifact, par.Version, err, hint)
 }
 
 func findPin(pins []module.Pin, g, a string) (module.Pin, bool) {

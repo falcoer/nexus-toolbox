@@ -129,7 +129,7 @@ func TestWithParentExplicitPinWinsAndMissingParent(t *testing.T) {
 	f2 := parentFake(t)
 	f2.snap = f2.snap[:2] // keep only ghc-web builds
 	s2, d2 := f2.targets()
-	if _, err := New().PlanPromote(context.Background(), s2, d2, withParent()); err == nil || !strings.Contains(err.Error(), "promouvez-le séparément") {
+	if _, err := New().PlanPromote(context.Background(), s2, d2, withParent()); err == nil || !strings.Contains(err.Error(), "--pin com.acme:par=<version>") {
 		t.Fatalf("clear error expected: %v", err)
 	}
 }
@@ -190,5 +190,73 @@ func TestConflictDiagnosisAndSizeFromHead(t *testing.T) {
 	}
 	if war.Size != int64(len("WAR-20260914.091709-45")) || plan.WritePolicy != "ALLOW_ONCE" {
 		t.Errorf("size from HEAD = %d, policy %q", war.Size, plan.WritePolicy)
+	}
+}
+
+func TestNoBuildHintSuggestsExistingRelease(t *testing.T) {
+	f := parentFake(t)
+	f.snap = f.snap[:2] // par has no snapshot build
+	f.dst["com/acme/par/03.27.10-0/par-03.27.10-0.pom"] = "x"
+	src, dst := f.targets()
+	_, err := New().PlanPromote(context.Background(), src, dst, withParent())
+	if err == nil || !strings.Contains(err.Error(), "existe déjà dans dst : utilisez --pin com.acme:par=03.27.10-0") {
+		t.Fatalf("hint expected: %v", err)
+	}
+	if strings.Count(err.Error(), "→") != 1 {
+		t.Errorf("exactly one hint expected: %v", err)
+	}
+}
+
+func TestPinnedParentAlreadyReleasedIsNotPromoted(t *testing.T) {
+	f := parentFake(t)
+	f.snap = f.snap[:2] // par has no snapshot build, but exists in the destination
+	f.dst["com/acme/par/03.27.10-9/par-03.27.10-9.pom"] = "x"
+	src, dst := f.targets()
+	i := withParent()
+	i.Pins = []module.Pin{{Group: "com.acme", Artifact: "par", Version: "03.27.10-9"}}
+	plan, err := New().PlanPromote(context.Background(), src, dst, i)
+	if err != nil || len(plan.Parents) != 0 || len(plan.BlockingRefs()) != 0 {
+		t.Fatalf("%v %+v", err, plan)
+	}
+	if len(plan.Notes) != 1 || !strings.Contains(plan.Notes[0], "figée sans promotion") {
+		t.Errorf("notes: %v", plan.Notes)
+	}
+	if _, err := New().ExecutePromote(context.Background(), src, dst, plan, noRep{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(f.dst["com/acme/ghc-web/03.27.10-0/ghc-web-03.27.10-0.pom"], "<version>03.27.10-9</version></parent>") {
+		t.Errorf("child must reference the pinned parent")
+	}
+	for _, p := range f.puts {
+		if strings.Contains(p, "com/acme/par/") {
+			t.Errorf("parent must not be uploaded: %s", p)
+		}
+	}
+}
+
+// ghc-web → par → root: root has no snapshot build but is already released and pinned.
+func TestGrandparentPinnedToExistingRelease(t *testing.T) {
+	f := parentFake(t)
+	f.src, f.snap = map[string]string{}, nil
+	f.addBuilds("ghc-web", childPom, true, "20260914.091709-45")
+	f.addBuilds("par", pomWithParent("par", "root"), false, "20260914.060000-2")
+	f.dst["com/acme/root/1.0/root-1.0.pom"] = "x"
+	src, dst := f.targets()
+	// without the pin: one clear hint on the innermost failure
+	if _, err := New().PlanPromote(context.Background(), src, dst, withParent()); err == nil || strings.Count(err.Error(), "→") != 1 ||
+		!strings.Contains(err.Error(), "--pin com.acme:root=") {
+		t.Fatalf("single hint on root expected: %v", err)
+	}
+	i := withParent()
+	i.Pins = []module.Pin{{Group: "com.acme", Artifact: "root", Version: "1.0"}}
+	plan, err := New().PlanPromote(context.Background(), src, dst, i)
+	if err != nil || len(plan.Parents) != 1 || plan.Parents[0].Artifact != "par" || len(plan.BlockingRefs()) != 0 {
+		t.Fatalf("%v %+v", err, plan)
+	}
+	if _, err := New().ExecutePromote(context.Background(), src, dst, plan, noRep{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(f.dst["com/acme/par/03.27.10-0/par-03.27.10-0.pom"], "<version>1.0</version></parent>") {
+		t.Errorf("parent pom must reference root 1.0: %q", f.dst["com/acme/par/03.27.10-0/par-03.27.10-0.pom"])
 	}
 }

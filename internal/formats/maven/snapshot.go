@@ -2,6 +2,7 @@ package maven
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"path"
@@ -12,6 +13,9 @@ import (
 
 	"github.com/falcoer/nexus-toolbox/internal/nexus"
 )
+
+// ErrNoBuild means the snapshot repository holds no build of the requested version.
+var ErrNoBuild = errors.New("aucun build")
 
 var tsVersionRe = regexp.MustCompile(`^(.+)-(\d{8}\.\d{6})-(\d+)$`)
 
@@ -106,7 +110,7 @@ func listBuilds(ctx context.Context, c *nexus.Client, repo, group, artifact, bas
 			return out, nil
 		}
 	}
-	return nil, fmt.Errorf("aucun build de %s:%s:%s-SNAPSHOT dans %s", group, artifact, base, repo)
+	return nil, fmt.Errorf("%w de %s:%s:%s-SNAPSHOT dans %s", ErrNoBuild, group, artifact, base, repo)
 }
 
 // selectBuild picks a build: wanted may be "", "43" or "20260914.070210-43".
