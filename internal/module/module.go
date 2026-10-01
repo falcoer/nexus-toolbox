@@ -95,23 +95,25 @@ const (
 )
 
 type PlanItem struct {
-	Kind           string    `json:"kind"`
-	SourcePath     string    `json:"source_path,omitempty"`
-	Path           string    `json:"path"` // destination path
-	Size           int64     `json:"size"`
-	SourceSHA1     string    `json:"source_sha1,omitempty"`
-	RemoteSHA1     string    `json:"remote_sha1,omitempty"`   // what the destination already holds (conflict)
-	MatchBuild     string    `json:"matches_build,omitempty"` // source build identical to RemoteSHA1
-	DiffLines      []string  `json:"conflict_diff,omitempty"` // pom conflict: remote (-) vs expected (+)
-	RemoteSize     int64     `json:"remote_size,omitempty"`
-	RemoteModified time.Time `json:"remote_modified,omitzero"`
-	SHA1           string    `json:"sha1"` // expected sha1 in the destination
-	Transformed    bool      `json:"transformed,omitempty"`
-	Diff           []string  `json:"diff,omitempty"`
-	Action         string    `json:"action"` // copy | skip | conflict
-	Reason         string    `json:"reason,omitempty"`
-	DownloadURL    string    `json:"-"`
-	Content        []byte    `json:"-"` // in-memory content (rewritten pom)
+	Kind             string    `json:"kind"`
+	SourcePath       string    `json:"source_path,omitempty"`
+	Path             string    `json:"path"` // destination path
+	Size             int64     `json:"size"`
+	SourceSHA1       string    `json:"source_sha1,omitempty"`
+	RemoteSHA1       string    `json:"remote_sha1,omitempty"`       // what the destination already holds (conflict)
+	MatchBuild       string    `json:"matches_build,omitempty"`     // source build identical to RemoteSHA1
+	MissingChecksums bool      `json:"missing_checksums,omitempty"` // identical file present without .sha1/.md5: they will be added
+	MD5              string    `json:"-"`
+	DiffLines        []string  `json:"conflict_diff,omitempty"` // pom conflict: remote (-) vs expected (+)
+	RemoteSize       int64     `json:"remote_size,omitempty"`
+	RemoteModified   time.Time `json:"remote_modified,omitzero"`
+	SHA1             string    `json:"sha1"` // expected sha1 in the destination
+	Transformed      bool      `json:"transformed,omitempty"`
+	Diff             []string  `json:"diff,omitempty"`
+	Action           string    `json:"action"` // copy | skip | conflict
+	Reason           string    `json:"reason,omitempty"`
+	DownloadURL      string    `json:"-"`
+	Content          []byte    `json:"-"` // in-memory content (rewritten pom)
 }
 
 type PromotePlan struct {
@@ -168,15 +170,16 @@ func (p *PromotePlan) BlockingRefs() []string {
 }
 
 type PromoteResult struct {
-	Copied        int      `json:"copied"`
-	Skipped       int      `json:"skipped"`
-	Failed        []string `json:"failed,omitempty"`
-	Verified      bool     `json:"verified"`
-	Published     []string `json:"published,omitempty"` // files verified in the destination (copied now or already identical)
-	MarkerWritten bool     `json:"marker_written"`
-	MetadataOK    bool     `json:"metadata_ok"`
-	SourceDeleted bool     `json:"source_deleted"`
-	Warnings      []string `json:"warnings,omitempty"`
+	Copied         int      `json:"copied"`
+	Skipped        int      `json:"skipped"`
+	Failed         []string `json:"failed,omitempty"`
+	Verified       bool     `json:"verified"`
+	ChecksumsAdded int      `json:"checksums_added,omitempty"` // files that received their .sha1/.md5
+	Published      []string `json:"published,omitempty"`       // files verified in the destination (copied now or already identical)
+	MarkerWritten  bool     `json:"marker_written"`
+	MetadataOK     bool     `json:"metadata_ok"`
+	SourceDeleted  bool     `json:"source_deleted"`
+	Warnings       []string `json:"warnings,omitempty"`
 }
 
 // Reporter receives progress events (CLI draws bars; MCP could emit notifications).

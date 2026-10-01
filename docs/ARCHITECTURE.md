@@ -55,7 +55,7 @@ Nexus 3 OSS ne propose pas d'API de promotion (staging = Pro). `promote` = **ren
 
 1. **résolution** (`snapshot.go`) : pour un `-SNAPSHOT`, recherche `maven.baseVersion`, regroupement des fichiers par build horodaté (`-YYYYMMDD.HHMMSS-N`), choix du plus récent ou de `--build` ; pour une version figée, composant exact ;
 2. **plan** (`promote.go`, aucune écriture) : validations (hosted, version/write policy de la destination), chemin de destination de chaque fichier, pom réécrit en mémoire (`pom.go`, découpe aux offsets), sha1 attendu, détection fichier par fichier via `GET <dst>/<path>.sha1` (absent → copier, identique → ignorer, différent → conflit), références SNAPSHOT ;
-3. **copie** : binaires streamés via fichier temporaire (sha1 recalculé et comparé à la source), pom envoyé depuis la mémoire, `PUT` sur le chemin Maven de la destination (Nexus génère checksums et métadonnées) ;
+3. **copie** : binaires streamés via fichier temporaire (sha1 recalculé et comparé à la source), pom envoyé depuis la mémoire, `PUT` sur le chemin Maven de la destination, puis `PUT` de `<fichier>.sha1` et `<fichier>.md5` (certains Nexus ne servent aucune empreinte pour un `PUT` simple) ; `maven-metadata.xml` est généré par Nexus ; un fichier identique sans empreintes est « complété » sans être renvoyé ;
 4. **vérification** (`verify.go`) : sha1 servi par la destination = sha1 attendu (relectures `no-cache` avec back-off), sinon hash du contenu publié ; échec = les trois valeurs ; lecture de `maven-metadata.xml` ;
 5. **marqueur** `-promoted-from-<version d'origine>.txt` (`marker.go` ; un marqueur existant, de n'importe quelle origine, est conservé ; son échec n'invalide pas la promotion), puis `--delete-source` du composant promu si tout est vérifié.
 

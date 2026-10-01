@@ -3,6 +3,7 @@ package maven
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
 	"crypto/sha1"
 	"encoding/hex"
 	"errors"
@@ -44,6 +45,8 @@ func short(h string) string {
 	}
 	return h
 }
+
+func md5Hex(b []byte) string { h := md5.Sum(b); return hex.EncodeToString(h[:]) }
 
 func sha1Hex(b []byte) string { h := sha1.Sum(b); return hex.EncodeToString(h[:]) }
 
@@ -438,8 +441,11 @@ func noteExistingRelease(ctx context.Context, dst module.Target, plan *module.Pr
 
 // releasedInDestination reports whether g:a:v already has its pom in the destination.
 func releasedInDestination(ctx context.Context, dst module.Target, g, a, v string) bool {
-	p := strings.ReplaceAll(g, ".", "/") + "/" + a + "/" + v + "/" + a + "-" + v + ".pom.sha1"
-	_, err := dst.Client.GetText(ctx, dst.Client.RepoURL(dst.Repo.Name, p))
+	p := strings.ReplaceAll(g, ".", "/") + "/" + a + "/" + v + "/" + a + "-" + v + ".pom"
+	if _, err := dst.Client.GetText(ctx, dst.Client.RepoURL(dst.Repo.Name, p+".sha1")); err == nil {
+		return true
+	}
+	_, _, err := dst.Client.HeadInfo(ctx, dst.Client.RepoURL(dst.Repo.Name, p)) // published without .sha1
 	return err == nil
 }
 
@@ -545,20 +551,47 @@ func classify(ctx context.Context, dst module.Target, it *module.PlanItem, force
 	case err == nil && remote != "" && strings.EqualFold(remote, it.SHA1):
 		it.Action, it.Reason = "skip", "déjà présent et identique"
 	case err == nil:
-		it.Action, it.Reason = "conflict", fmt.Sprintf("existe déjà avec un contenu différent (sha1 destination %s ≠ attendu %s)", short(remote), short(it.SHA1))
-		it.RemoteSHA1 = remote
-		if b, ok := shaIndex[strings.ToLower(remote)]; ok {
-			it.MatchBuild = b
-			it.Reason += " ; identique au build " + b
-		}
-		if force && forceAllowed {
-			it.Action, it.Reason = "copy", "écrase la version existante (--force)"
-		} else if force {
-			it.Reason += " (write policy ALLOW_ONCE : écrasement impossible)"
-		}
+		markConflict(it, remote, force, forceAllowed, shaIndex)
 	case nexus.IsNotFound(err):
-		it.Action = "copy"
+		classifyWithoutChecksum(ctx, dst, it, force, forceAllowed, shaIndex)
 	}
+}
+
+// markConflict records that the destination holds different content (remote = its sha1).
+func markConflict(it *module.PlanItem, remote string, force, forceAllowed bool, shaIndex map[string]string) {
+	it.Action, it.Reason = "conflict", fmt.Sprintf("existe déjà avec un contenu différent (sha1 destination %s ≠ attendu %s)", short(remote), short(it.SHA1))
+	it.RemoteSHA1 = remote
+	if b, ok := shaIndex[strings.ToLower(remote)]; ok {
+		it.MatchBuild = b
+		it.Reason += " ; identique au build " + b
+	}
+	if force && forceAllowed {
+		it.Action, it.Reason = "copy", "écrase la version existante (--force)"
+	} else if force {
+		it.Reason += " (write policy ALLOW_ONCE : écrasement impossible)"
+	}
+}
+
+// classifyWithoutChecksum handles a destination that serves no .sha1 for the path. Files
+// uploaded with a bare PUT have none on some Nexus versions, so the file itself decides:
+// absent → copy; present and identical → skip (checksums to add); present and different → conflict.
+func classifyWithoutChecksum(ctx context.Context, dst module.Target, it *module.PlanItem, force, forceAllowed bool, shaIndex map[string]string) {
+	u := dst.Client.RepoURL(dst.Repo.Name, it.Path)
+	if _, _, err := dst.Client.HeadInfo(ctx, u); err != nil {
+		it.Action = "copy" // absent (or unreadable: the upload will tell)
+		return
+	}
+	sha, md, _, err := dst.Client.HashFileSums(ctx, u)
+	if err != nil {
+		it.Action = "copy"
+		return
+	}
+	if strings.EqualFold(sha, it.SHA1) {
+		it.Action, it.MissingChecksums, it.MD5 = "skip", true, md
+		it.Reason = "présent et identique, sans empreintes .sha1/.md5 : elles seront ajoutées"
+		return
+	}
+	markConflict(it, sha, force, forceAllowed, shaIndex)
 }
 
 // classifyMarker never conflicts: an existing marker (whatever its origin version) is kept,
@@ -567,6 +600,8 @@ func classifyMarker(ctx context.Context, dst module.Target, it *module.PlanItem,
 	if existing == "" {
 		if _, err := dst.Client.GetText(ctx, dst.Client.RepoURL(dst.Repo.Name, it.Path+".sha1")); err == nil {
 			existing = it.Path
+		} else if _, _, herr := dst.Client.HeadInfo(ctx, dst.Client.RepoURL(dst.Repo.Name, it.Path)); herr == nil {
+			existing = it.Path // present without .sha1
 		}
 	}
 	switch {
@@ -614,6 +649,7 @@ func (m *Module) ExecutePromote(ctx context.Context, src, dst module.Target, pla
 		if pr != nil {
 			res.Copied += pr.Copied
 			res.Skipped += pr.Skipped
+			res.ChecksumsAdded += pr.ChecksumsAdded
 			res.Published = append(res.Published, pr.Published...)
 			res.MarkerWritten = res.MarkerWritten || pr.MarkerWritten
 			res.MetadataOK = res.MetadataOK && pr.MetadataOK
@@ -640,6 +676,14 @@ func (m *Module) ExecutePromote(ctx context.Context, src, dst module.Target, pla
 	for _, it := range files {
 		if it.Action == "skip" {
 			res.Skipped++
+			if it.MissingChecksums {
+				if err := putChecksums(ctx, dst, it.Path, it.SHA1, it.MD5); err != nil {
+					res.Failed = append(res.Failed, fmt.Sprintf("%s : ajout des empreintes impossible : %v", it.Path, err))
+					uploadFailed[it.Path] = true
+				} else {
+					res.ChecksumsAdded++
+				}
+			}
 			continue
 		}
 		rep.AssetStart(it.Path, it.Size)
@@ -689,6 +733,9 @@ func (m *Module) ExecutePromote(ctx context.Context, src, dst module.Target, pla
 		rep.AssetStart(marker.Path, int64(len(body)))
 		err := putBytes(ctx, dst, marker.Path, body, "text/plain; charset=utf-8")
 		if err == nil {
+			err = putChecksums(ctx, dst, marker.Path, sha1Hex(body), md5Hex(body))
+		}
+		if err == nil {
 			var vr verifyResult
 			if vr, err = verifyRemote(ctx, dst, marker.Path, sha1Hex(body)); err == nil && vr.Warning != "" {
 				res.Warnings = append(res.Warnings, vr.Warning)
@@ -718,6 +765,15 @@ func (m *Module) ExecutePromote(ctx context.Context, src, dst module.Target, pla
 	return res, nil
 }
 
+// putChecksums publishes <path>.sha1 and <path>.md5 like "mvn deploy" does: some Nexus versions
+// do not serve checksum files for assets uploaded with a bare PUT.
+func putChecksums(ctx context.Context, dst module.Target, p, sha, md string) error {
+	if err := putBytes(ctx, dst, p+".sha1", []byte(sha), "text/plain"); err != nil {
+		return err
+	}
+	return putBytes(ctx, dst, p+".md5", []byte(md), "text/plain")
+}
+
 func putBytes(ctx context.Context, dst module.Target, p string, b []byte, ctype string) error {
 	open := func() (io.Reader, error) { return bytes.NewReader(b), nil }
 	if err := dst.Client.Put(ctx, dst.Repo.Name, p, open, int64(len(b)), ctype); err != nil {
@@ -733,7 +789,7 @@ func copyOne(ctx context.Context, src, dst module.Target, it module.PlanItem, re
 			return err
 		}
 		rep.AssetBytes(int64(len(it.Content)))
-		return nil
+		return putChecksums(ctx, dst, it.Path, sha1Hex(it.Content), md5Hex(it.Content))
 	}
 	tmp, err := os.CreateTemp("", "nexus-promote-*")
 	if err != nil {
@@ -741,12 +797,12 @@ func copyOne(ctx context.Context, src, dst module.Target, it module.PlanItem, re
 	}
 	defer os.Remove(tmp.Name())
 	defer tmp.Close()
-	h := sha1.New()
-	n, err := src.Client.Download(ctx, it.DownloadURL, io.MultiWriter(tmp, h))
+	h1, h2 := sha1.New(), md5.New()
+	n, err := src.Client.Download(ctx, it.DownloadURL, io.MultiWriter(tmp, h1, h2))
 	if err != nil {
 		return fmt.Errorf("téléchargement : %w", err)
 	}
-	sum := hex.EncodeToString(h.Sum(nil))
+	sum := hex.EncodeToString(h1.Sum(nil))
 	if it.SourceSHA1 != "" && !strings.EqualFold(sum, it.SourceSHA1) {
 		return fmt.Errorf("sha1 téléchargé (%s) ≠ sha1 annoncé par la source (%s)", sum, it.SourceSHA1)
 	}
@@ -760,7 +816,7 @@ func copyOne(ctx context.Context, src, dst module.Target, it module.PlanItem, re
 	if err := dst.Client.Put(ctx, dst.Repo.Name, it.Path, open, n, contentType(it.Path)); err != nil {
 		return fmt.Errorf("envoi : %w", err)
 	}
-	return nil
+	return putChecksums(ctx, dst, it.Path, sum, hex.EncodeToString(h2.Sum(nil)))
 }
 
 func contentType(p string) string {

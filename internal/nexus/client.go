@@ -3,6 +3,7 @@ package nexus
 
 import (
 	"context"
+	"crypto/md5"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
@@ -319,4 +320,19 @@ func (c *Client) HashFile(ctx context.Context, u string) (string, int64, error) 
 		return "", n, err
 	}
 	return hex.EncodeToString(h.Sum(nil)), n, nil
+}
+
+// HashFileSums streams a resource and returns its SHA-1 and MD5 (hex) and byte count.
+func (c *Client) HashFileSums(ctx context.Context, u string) (sha, md string, n int64, err error) {
+	resp, err := c.do(ctx, http.MethodGet, u, nil, 0, "", true)
+	if err != nil {
+		return "", "", 0, err
+	}
+	defer resp.Body.Close()
+	h1, h2 := sha1.New(), md5.New()
+	n, err = io.Copy(io.MultiWriter(h1, h2), resp.Body)
+	if err != nil {
+		return "", "", n, err
+	}
+	return hex.EncodeToString(h1.Sum(nil)), hex.EncodeToString(h2.Sum(nil)), n, nil
 }

@@ -43,11 +43,14 @@ type fake struct {
 	puts   []string
 	failOn string // PUT paths containing this answer 500
 	// verification fault injection (destination side)
-	lagAfterPut    int // after each PUT, the next N .sha1 reads answer 404
-	lagLeft        int
-	sha1Mode       string // "404" | "wrong" | "403" : how .sha1 reads behave; "403" also forbids file reads
-	tamperGET      bool   // file reads return altered content
-	cacheHdrMissed bool   // a read reached the destination without Cache-Control: no-cache
+	lagAfterPut int // after each PUT, the next N .sha1 reads answer 404
+	lagLeft     int
+	sha1Mode    string // "404" | "wrong" | "403" : how .sha1 reads behave; "403" also forbids file reads
+	tamperGET   bool   // file reads return altered content
+	// realSums mimics a Nexus that serves .sha1 only for checksum files someone uploaded
+	realSums       bool
+	sums           map[string]string // uploaded .sha1/.md5 files (path → body)
+	cacheHdrMissed bool              // a read reached the destination without Cache-Control: no-cache
 }
 
 func sum(s string) string { h := sha1.Sum([]byte(s)); return hex.EncodeToString(h[:]) }
@@ -128,6 +131,15 @@ func newFake(t *testing.T, policy string) *fake {
 				return
 			}
 		}
+		if r.Method == http.MethodPut && (strings.HasSuffix(p, ".sha1") || strings.HasSuffix(p, ".md5")) {
+			b, _ := io.ReadAll(r.Body)
+			if f.sums == nil {
+				f.sums = map[string]string{}
+			}
+			f.sums[p] = string(b)
+			w.WriteHeader(201)
+			return
+		}
 		if r.Method == http.MethodPut {
 			f.lagLeft = f.lagAfterPut
 			if f.failOn != "" && strings.Contains(p, f.failOn) {
@@ -141,7 +153,12 @@ func newFake(t *testing.T, policy string) *fake {
 			return
 		}
 		if base, ok := strings.CutSuffix(p, ".sha1"); ok {
-			if c, ok := f.dst[base]; ok {
+			if f.realSums {
+				if c, ok := f.sums[p]; ok {
+					io.WriteString(w, c)
+					return
+				}
+			} else if c, ok := f.dst[base]; ok {
 				io.WriteString(w, sum(c))
 				return
 			}

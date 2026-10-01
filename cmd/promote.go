@@ -28,7 +28,7 @@ commande est reprenable (les fichiers déjà identiques sont ignorés).
 Pour une version -SNAPSHOT, le build le plus récent est promu (ou celui désigné par --build) :
 les fichiers sont renommés (ghc-web-1.2.3-20260914.070210-43.war → ghc-web-1.2.3.war) et le
 <version> du pom est réécrit (1.2.3-SNAPSHOT → 1.2.3, ou --as-version). Les binaires restent
-inchangés ; Nexus recalcule les empreintes. Les références -SNAPSHOT du pom (parent,
+inchangés ; les empreintes .sha1/.md5 sont publiées avec chaque fichier. Les références -SNAPSHOT du pom (parent,
 dépendances) bloquent la promotion : --pin groupId:artifactId=version les réécrit.
 Un fichier ghc-web-1.2.3-promoted-from-1.2.3-20260914.070210-43.txt (version d'origine en suffixe)
 trace la provenance (--no-marker pour le désactiver).`,
@@ -192,7 +192,7 @@ func printSummary(p *module.PromotePlan) {
 			switch {
 			case it.Action == "conflict":
 				conflicts++
-			case it.Action == "copy" && it.Kind == module.KindFile:
+			case it.Action == "copy" && it.Kind == module.KindFile, it.MissingChecksums:
 				copies++
 			}
 		}
@@ -233,6 +233,9 @@ func printOnePlan(p *module.PromotePlan) {
 		switch it.Action {
 		case "skip":
 			mark = e.Muted("ignoré  ")
+			if it.MissingChecksums {
+				mark = e.Info("compléter")
+			}
 		case "conflict":
 			mark = e.Error("conflit ")
 		}
@@ -314,6 +317,9 @@ func printResult(r *module.PromoteResult) {
 		}
 		if r.SourceDeleted {
 			extra += ", source supprimée"
+		}
+		if r.ChecksumsAdded > 0 {
+			extra += fmt.Sprintf(", empreintes .sha1/.md5 ajoutées à %d fichier(s)", r.ChecksumsAdded)
 		}
 		e.Successf("%d copié(s), %d ignoré(s), sha1 vérifiés%s", r.Copied, r.Skipped, extra)
 	}

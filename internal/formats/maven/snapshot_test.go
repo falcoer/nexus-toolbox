@@ -87,9 +87,10 @@ func TestPromoteSnapshotLatestBuild(t *testing.T) {
 			t.Errorf("marker lacks %q:\n%s", s, mk)
 		}
 	}
-	for p := range f.dst {
-		if strings.HasSuffix(p, ".sha1") || strings.HasSuffix(p, ".md5") {
-			t.Errorf("checksum file uploaded: %s", p)
+	// every published file (marker included) gets its .sha1 and .md5, like "mvn deploy"
+	for p, body := range f.dst {
+		if f.sums[p+".sha1"] != sum(body) || f.sums[p+".md5"] != md5Hex([]byte(body)) {
+			t.Errorf("missing or wrong checksums for %s: %q %q", p, f.sums[p+".sha1"], f.sums[p+".md5"])
 		}
 	}
 	if len(f.dst) != 3 || f.del[0] != "id-ghc-web-20260914.091709-45" {
