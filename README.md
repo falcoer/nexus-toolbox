@@ -46,6 +46,18 @@ Codes retour : 0 ok · 1 erreur · 2 usage · 3 partiel · 4 accès refusé · 1
 Configuration dans `~/.nexus/` (`NEXUS_HOME` pour la déplacer). Pour l'automatisation :
 `NEXUS_<ALIAS>_USER` / `NEXUS_<ALIAS>_PASSWORD` (alias en majuscules, `-` → `_`).
 
+## Build hors-ligne / réseau d'entreprise
+
+Les dépendances sont **vendorisées** (`vendor/`) : `go build` et `go test` n'ont besoin d'aucun accès à `proxy.golang.org`.
+
+```sh
+go test ./...
+go build -o nexus.exe .        # nexus sous Linux/macOS
+```
+
+Pour mettre à jour une dépendance (depuis un poste avec accès réseau) :
+`go get <module>@<version> && go mod tidy && go mod vendor`, puis committer `go.mod`, `go.sum` et `vendor/`.
+
 ## Documentation
 
 - [docs/CLI-UX-GUIDELINES.md](docs/CLI-UX-GUIDELINES.md) — charte UX commune à tous nos CLI (couleurs, tableaux, flux, pagination, erreurs, codes retour)
