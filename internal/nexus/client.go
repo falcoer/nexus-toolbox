@@ -3,6 +3,8 @@ package nexus
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -98,6 +100,11 @@ func (c *Client) do(ctx context.Context, method, u string, bodyFn func() (io.Rea
 		}
 		req.Header.Set("Accept", "application/json, */*")
 		req.Header.Set("User-Agent", "nexus-toolbox")
+		if method == http.MethodGet || method == http.MethodHead {
+			// reads (plan, verification) must never be answered by an intermediate cache
+			req.Header.Set("Cache-Control", "no-cache")
+			req.Header.Set("Pragma", "no-cache")
+		}
 		if c.User != "" {
 			req.SetBasicAuth(c.User, c.Password)
 		}
@@ -297,4 +304,19 @@ func (c *Client) HeadInfo(ctx context.Context, u string) (int64, time.Time, erro
 	resp.Body.Close()
 	mod, _ := http.ParseTime(resp.Header.Get("Last-Modified"))
 	return resp.ContentLength, mod, nil
+}
+
+// HashFile streams a resource into a SHA-1 hash and returns the hex digest and byte count.
+func (c *Client) HashFile(ctx context.Context, u string) (string, int64, error) {
+	resp, err := c.do(ctx, http.MethodGet, u, nil, 0, "", true)
+	if err != nil {
+		return "", 0, err
+	}
+	defer resp.Body.Close()
+	h := sha1.New()
+	n, err := io.Copy(h, resp.Body)
+	if err != nil {
+		return "", n, err
+	}
+	return hex.EncodeToString(h.Sum(nil)), n, nil
 }

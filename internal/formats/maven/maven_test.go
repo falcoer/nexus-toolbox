@@ -42,6 +42,12 @@ type fake struct {
 	snap   []nexus.Component
 	puts   []string
 	failOn string // PUT paths containing this answer 500
+	// verification fault injection (destination side)
+	lagAfterPut    int // after each PUT, the next N .sha1 reads answer 404
+	lagLeft        int
+	sha1Mode       string // "404" | "wrong" | "403" : how .sha1 reads behave; "403" also forbids file reads
+	tamperGET      bool   // file reads return altered content
+	cacheHdrMissed bool   // a read reached the destination without Cache-Control: no-cache
 }
 
 func sum(s string) string { h := sha1.Sum([]byte(s)); return hex.EncodeToString(h[:]) }
@@ -101,7 +107,29 @@ func newFake(t *testing.T, policy string) *fake {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		p := strings.TrimPrefix(r.URL.Path, "/repository/dst/")
+		if r.Method != http.MethodPut && r.Header.Get("Cache-Control") != "no-cache" {
+			f.cacheHdrMissed = true
+		}
+		if r.Method != http.MethodPut {
+			isSum := strings.HasSuffix(p, ".sha1")
+			switch {
+			case f.sha1Mode == "403":
+				w.WriteHeader(403)
+				return
+			case isSum && f.sha1Mode == "404":
+				http.NotFound(w, r)
+				return
+			case isSum && f.sha1Mode == "wrong":
+				io.WriteString(w, strings.Repeat("0", 40))
+				return
+			case isSum && f.lagLeft > 0:
+				f.lagLeft--
+				http.NotFound(w, r)
+				return
+			}
+		}
 		if r.Method == http.MethodPut {
+			f.lagLeft = f.lagAfterPut
 			if f.failOn != "" && strings.Contains(p, f.failOn) {
 				w.WriteHeader(500)
 				return
@@ -119,6 +147,9 @@ func newFake(t *testing.T, policy string) *fake {
 			}
 		} else if c, ok := f.dst[p]; ok {
 			w.Header().Set("Last-Modified", "Mon, 14 Sep 2026 14:20:00 GMT")
+			if f.tamperGET && r.Method != http.MethodHead {
+				c += "X"
+			}
 			w.Header().Set("Content-Length", strconv.Itoa(len(c)))
 			if r.Method != http.MethodHead {
 				io.WriteString(w, c)

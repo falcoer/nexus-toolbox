@@ -103,8 +103,16 @@ trace la provenance (--no-marker pour le désactiver).`,
 				_ = emitJSON(map[string]any{"schema": 1, "plan": plan, "result": res})
 			}
 			if errors.Is(err, module.ErrPartial) {
-				env.Failure("Promotion partielle", "certains fichiers n'ont pas pu être promus ou vérifiés",
-					"relancez la même commande : les fichiers déjà identiques seront ignorés")
+				why := "certains fichiers n'ont pas pu être promus ou vérifiés"
+				if res != nil && len(res.Published) > 0 {
+					names := make([]string, len(res.Published))
+					for i, p := range res.Published {
+						names[i] = path.Base(p)
+					}
+					why += fmt.Sprintf("\n  déjà publié et vérifié dans %s : %s", dst.Repo.Alias, strings.Join(names, ", "))
+				}
+				env.Failure("Promotion partielle", why,
+					"relancer la même commande est sans risque : les fichiers identiques sont ignorés ; un fichier existant au contenu différent est refusé par Nexus sans rien modifier")
 			}
 			return err
 		},

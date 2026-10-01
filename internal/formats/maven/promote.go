@@ -614,6 +614,7 @@ func (m *Module) ExecutePromote(ctx context.Context, src, dst module.Target, pla
 		if pr != nil {
 			res.Copied += pr.Copied
 			res.Skipped += pr.Skipped
+			res.Published = append(res.Published, pr.Published...)
 			res.MarkerWritten = res.MarkerWritten || pr.MarkerWritten
 			res.MetadataOK = res.MetadataOK && pr.MetadataOK
 			res.Warnings = append(res.Warnings, pr.Warnings...)
@@ -635,6 +636,7 @@ func (m *Module) ExecutePromote(ctx context.Context, src, dst module.Target, pla
 		}
 		files = append(files, it)
 	}
+	uploadFailed := map[string]bool{}
 	for _, it := range files {
 		if it.Action == "skip" {
 			res.Skipped++
@@ -644,6 +646,7 @@ func (m *Module) ExecutePromote(ctx context.Context, src, dst module.Target, pla
 		err := copyOne(ctx, src, dst, it, rep)
 		rep.AssetDone(it.Path, err)
 		if err != nil {
+			uploadFailed[it.Path] = true
 			res.Failed = append(res.Failed, fmt.Sprintf("%s : %v", it.Path, err))
 			if ctx.Err() != nil {
 				break
@@ -652,12 +655,21 @@ func (m *Module) ExecutePromote(ctx context.Context, src, dst module.Target, pla
 		}
 		res.Copied++
 	}
-	// Verification: the destination's own checksum must match the expected one.
+	// Verification: what the destination serves must match what we meant to publish
+	// (retries, then content hash if the .sha1 is unreliable; see verifyRemote).
 	for _, it := range files {
-		remote, err := dst.Client.GetText(ctx, dst.Client.RepoURL(dst.Repo.Name, it.Path+".sha1"))
-		if err != nil || !strings.EqualFold(remote, it.SHA1) {
-			res.Failed = append(res.Failed, fmt.Sprintf("%s : vérification sha1 échouée", it.Path))
+		if uploadFailed[it.Path] {
+			continue
 		}
+		vr, err := verifyRemote(ctx, dst, it.Path, it.SHA1)
+		if err != nil {
+			res.Failed = append(res.Failed, fmt.Sprintf("%s : vérification échouée : %v", it.Path, err))
+			continue
+		}
+		if vr.Warning != "" {
+			res.Warnings = append(res.Warnings, vr.Warning)
+		}
+		res.Published = append(res.Published, it.Path)
 	}
 	res.Verified = len(res.Failed) == 0
 	if !res.Verified {
@@ -677,9 +689,9 @@ func (m *Module) ExecutePromote(ctx context.Context, src, dst module.Target, pla
 		rep.AssetStart(marker.Path, int64(len(body)))
 		err := putBytes(ctx, dst, marker.Path, body, "text/plain; charset=utf-8")
 		if err == nil {
-			var remote string
-			if remote, err = dst.Client.GetText(ctx, dst.Client.RepoURL(dst.Repo.Name, marker.Path+".sha1")); err == nil && !strings.EqualFold(remote, sha1Hex(body)) {
-				err = fmt.Errorf("vérification sha1 échouée")
+			var vr verifyResult
+			if vr, err = verifyRemote(ctx, dst, marker.Path, sha1Hex(body)); err == nil && vr.Warning != "" {
+				res.Warnings = append(res.Warnings, vr.Warning)
 			}
 		}
 		if err == nil {

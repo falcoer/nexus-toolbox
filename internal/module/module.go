@@ -172,6 +172,7 @@ type PromoteResult struct {
 	Skipped       int      `json:"skipped"`
 	Failed        []string `json:"failed,omitempty"`
 	Verified      bool     `json:"verified"`
+	Published     []string `json:"published,omitempty"` // files verified in the destination (copied now or already identical)
 	MarkerWritten bool     `json:"marker_written"`
 	MetadataOK    bool     `json:"metadata_ok"`
 	SourceDeleted bool     `json:"source_deleted"`
