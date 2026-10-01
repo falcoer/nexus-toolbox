@@ -18,7 +18,11 @@ type PomResult struct {
 	Refs       []string // SNAPSHOT references still present after the rewrite
 	UnusedPins []string
 	HasVersion bool // the pom declares its own <version>
+	Parent     *ParentRef
 }
+
+// ParentRef is the <parent> declared by a pom (as found, before any pin).
+type ParentRef struct{ Group, Artifact, Version string }
 
 type edit struct {
 	start, end int
@@ -124,6 +128,9 @@ func RewritePom(src []byte, newVersion string, pins []module.Pin) (*PomResult, e
 			if len(ctxs) > 0 && ctxs[len(ctxs)-1].depth == n {
 				c := ctxs[len(ctxs)-1]
 				ctxs = ctxs[:len(ctxs)-1]
+				if c.kind == "parent" {
+					res.Parent = &ParentRef{c.group, c.artifact, c.version}
+				}
 				if c.hasVersion && IsSnapshot(c.version) {
 					pinned := false
 					for i, p := range pins {

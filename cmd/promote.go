@@ -74,7 +74,7 @@ Un fichier ghc-web-1.2.3-promoted-from.txt trace la provenance (--no-marker pour
 				return fmt.Errorf("le pom référence %d version(s) -SNAPSHOT (voir ci-dessus) : utilisez --pin groupId:artifactId=version pour les figer, ou --allow-snapshot-refs", len(refs))
 			}
 			if blocked := plan.Blocking(); len(blocked) > 0 {
-				return fmt.Errorf("%d fichier(s) existent déjà dans %s avec un contenu différent (--force si la write policy le permet)", len(blocked), dst.Repo.Alias)
+				return conflictError(plan, len(blocked), dst.Repo.Alias)
 			}
 			if dry {
 				env.Infof("dry-run : rien n'a été modifié")
@@ -107,13 +107,25 @@ Un fichier ghc-web-1.2.3-promoted-from.txt trace la provenance (--no-marker pour
 	f.StringVar(&in.Build, "build", "", "build du snapshot à promouvoir : 43 ou 20260914.070210-43 (défaut : le plus récent)")
 	f.StringArrayVar(&pins, "pin", nil, "réécrit une référence -SNAPSHOT du pom : groupId:artifactId=version (répétable)")
 	f.BoolVar(&in.AllowSnapshotRefs, "allow-snapshot-refs", false, "autorise les références -SNAPSHOT restantes dans le pom")
+	f.BoolVar(&in.WithParent, "with-parent", false, "promeut aussi les parents -SNAPSHOT du pom (ancêtres d'abord) et fige la référence")
 	f.BoolVar(&in.NoMarker, "no-marker", false, "n'ajoute pas le fichier -promoted-from.txt")
 	f.BoolVar(&in.DeleteSource, "delete-source", false, "supprime la source après copie vérifiée")
 	return c
 }
 
+func conflictError(p *module.PromotePlan, n int, dst string) error {
+	hint := "--force écrasera les fichiers existants"
+	if p.WritePolicy == "ALLOW_ONCE" {
+		hint = "la write policy ALLOW_ONCE interdit l'écrasement : supprimez cette version dans le repo " + dst + " (UI Nexus) ou choisissez --as-version"
+	}
+	return fmt.Errorf("%d fichier(s) existent déjà dans %s avec un contenu différent\n  %s %s", n, dst, env.Arrow(), hint)
+}
+
 func confirmText(p *module.PromotePlan) string {
 	s := fmt.Sprintf("Promouvoir %s:%s:%s vers %s", p.Group, p.Artifact, p.Version, p.Destination)
+	if n := len(p.Parents); n > 0 {
+		s += fmt.Sprintf(" (avec %d parent(s))", n)
+	}
 	if p.DeleteSource {
 		s += " puis SUPPRIMER la source de " + p.Source
 	}
@@ -130,6 +142,17 @@ func emitJSON(v any) error {
 }
 
 func printPlan(p *module.PromotePlan) {
+	for i, par := range p.Parents {
+		fmt.Fprintln(env.Err, env.Muted(fmt.Sprintf("── parent %d/%d (promu avant l'artifact) ──", i+1, len(p.Parents))))
+		printOnePlan(par)
+	}
+	if len(p.Parents) > 0 {
+		fmt.Fprintln(env.Err, env.Muted("── artifact principal ──"))
+	}
+	printOnePlan(p)
+}
+
+func printOnePlan(p *module.PromotePlan) {
 	e := env
 	fmt.Fprintf(e.Err, "%s %s:%s  %s %s %s\n", e.IconInfo(), e.Accent(p.Group), e.Accent(p.Artifact), p.Source, e.Arrow(), p.Destination)
 	ver := p.SourceVersion

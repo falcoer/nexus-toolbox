@@ -27,8 +27,12 @@ func (s hitSource) Next(ctx context.Context) ([]ui.Row, bool, error) {
 	hits, done, err := s.it.Next(ctx)
 	rows := make([]ui.Row, len(hits))
 	for i, h := range hits {
+		size := "-" // not every Nexus version reports file sizes in search results
+		if h.Size > 0 {
+			size = ui.HumanSize(h.Size)
+		}
 		rows[i] = ui.Row{
-			Cells: []string{h.Group + ":" + h.Artifact, h.Version, fmt.Sprint(h.Assets), ui.HumanSize(h.Size), ui.HumanAgo(h.Modified)},
+			Cells: []string{h.Group + ":" + h.Artifact, h.Version, fmt.Sprint(h.Assets), size, ui.HumanAgo(h.Modified)},
 			Raw:   h,
 		}
 	}

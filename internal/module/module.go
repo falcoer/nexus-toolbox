@@ -71,17 +71,19 @@ type Pin struct {
 }
 
 type PromoteInput struct {
-	Group             string `json:"group"`
-	Artifact          string `json:"artifact"`
-	Version           string `json:"version"`              // 1.2.3, 1.2.3-SNAPSHOT or 1.2.3-20260914.070210-43
-	AsVersion         string `json:"as_version,omitempty"` // target version (default: source without -SNAPSHOT)
-	Build             string `json:"build,omitempty"`      // snapshot build: "43" or "20260914.070210-43"
-	Pins              []Pin  `json:"pins,omitempty"`
-	AllowSnapshotRefs bool   `json:"allow_snapshot_refs,omitempty"`
-	NoMarker          bool   `json:"no_marker,omitempty"`
-	Force             bool   `json:"force,omitempty"`
-	DeleteSource      bool   `json:"delete_source,omitempty"`
-	Tool              string `json:"-"` // "nexus-toolbox x.y.z", written in the marker file
+	Group             string   `json:"group"`
+	Artifact          string   `json:"artifact"`
+	Version           string   `json:"version"`              // 1.2.3, 1.2.3-SNAPSHOT or 1.2.3-20260914.070210-43
+	AsVersion         string   `json:"as_version,omitempty"` // target version (default: source without -SNAPSHOT)
+	Build             string   `json:"build,omitempty"`      // snapshot build: "43" or "20260914.070210-43"
+	Pins              []Pin    `json:"pins,omitempty"`
+	AllowSnapshotRefs bool     `json:"allow_snapshot_refs,omitempty"`
+	NoMarker          bool     `json:"no_marker,omitempty"`
+	WithParent        bool     `json:"with_parent,omitempty"` // also promote SNAPSHOT parent poms, ancestors first
+	Ancestors         []string `json:"-"`                     // group:artifact chain being planned (cycle/depth guard)
+	Force             bool     `json:"force,omitempty"`
+	DeleteSource      bool     `json:"delete_source,omitempty"`
+	Tool              string   `json:"-"` // "nexus-toolbox x.y.z", written in the marker file
 }
 
 const (
@@ -95,7 +97,9 @@ type PlanItem struct {
 	Path        string   `json:"path"` // destination path
 	Size        int64    `json:"size"`
 	SourceSHA1  string   `json:"source_sha1,omitempty"`
-	SHA1        string   `json:"sha1"` // expected sha1 in the destination
+	RemoteSHA1  string   `json:"remote_sha1,omitempty"`   // what the destination already holds (conflict)
+	MatchBuild  string   `json:"matches_build,omitempty"` // source build identical to RemoteSHA1
+	SHA1        string   `json:"sha1"`                    // expected sha1 in the destination
 	Transformed bool     `json:"transformed,omitempty"`
 	Diff        []string `json:"diff,omitempty"`
 	Action      string   `json:"action"` // copy | skip | conflict
@@ -105,28 +109,34 @@ type PlanItem struct {
 }
 
 type PromotePlan struct {
-	Group             string     `json:"group"`
-	Artifact          string     `json:"artifact"`
-	Version           string     `json:"version"` // as requested
-	SourceVersion     string     `json:"source_version"`
-	SourceBuild       string     `json:"source_build,omitempty"`
-	Builds            []string   `json:"available_builds,omitempty"`
-	TargetVersion     string     `json:"target_version"`
-	Source            string     `json:"source"`
-	Destination       string     `json:"destination"`
-	SourceID          string     `json:"source_component_id,omitempty"`
-	Items             []PlanItem `json:"items"`
-	SnapshotRefs      []string   `json:"unresolved_snapshot_refs,omitempty"`
-	AllowSnapshotRefs bool       `json:"allow_snapshot_refs,omitempty"`
-	Force             bool       `json:"force"`
-	DeleteSource      bool       `json:"delete_source"`
-	Tool              string     `json:"-"`
-	Warnings          []string   `json:"warnings,omitempty"`
+	Group             string         `json:"group"`
+	Artifact          string         `json:"artifact"`
+	Version           string         `json:"version"` // as requested
+	SourceVersion     string         `json:"source_version"`
+	SourceBuild       string         `json:"source_build,omitempty"`
+	Builds            []string       `json:"available_builds,omitempty"`
+	TargetVersion     string         `json:"target_version"`
+	Source            string         `json:"source"`
+	Destination       string         `json:"destination"`
+	SourceID          string         `json:"source_component_id,omitempty"`
+	Parents           []*PromotePlan `json:"parents,omitempty"` // SNAPSHOT parents to promote first (highest ancestor first)
+	WritePolicy       string         `json:"destination_write_policy,omitempty"`
+	Items             []PlanItem     `json:"items"`
+	SnapshotRefs      []string       `json:"unresolved_snapshot_refs,omitempty"`
+	AllowSnapshotRefs bool           `json:"allow_snapshot_refs,omitempty"`
+	Force             bool           `json:"force"`
+	DeleteSource      bool           `json:"delete_source"`
+	Tool              string         `json:"-"`
+	Warnings          []string       `json:"warnings,omitempty"`
 }
 
-// Blocking returns the items that prevent the promotion (conflicts without --force).
+// Blocking returns the items that prevent the promotion (conflicts without --force),
+// parents included.
 func (p *PromotePlan) Blocking() []PlanItem {
 	var out []PlanItem
+	for _, par := range p.Parents {
+		out = append(out, par.Blocking()...)
+	}
 	for _, it := range p.Items {
 		if it.Action == "conflict" {
 			out = append(out, it)
@@ -135,12 +145,16 @@ func (p *PromotePlan) Blocking() []PlanItem {
 	return out
 }
 
-// BlockingRefs returns SNAPSHOT references that forbid the promotion.
+// BlockingRefs returns SNAPSHOT references that forbid the promotion, parents included.
 func (p *PromotePlan) BlockingRefs() []string {
-	if p.AllowSnapshotRefs {
-		return nil
+	var out []string
+	for _, par := range p.Parents {
+		out = append(out, par.BlockingRefs()...)
 	}
-	return p.SnapshotRefs
+	if !p.AllowSnapshotRefs {
+		out = append(out, p.SnapshotRefs...)
+	}
+	return out
 }
 
 type PromoteResult struct {

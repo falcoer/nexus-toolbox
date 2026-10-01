@@ -277,3 +277,13 @@ func (c *Client) GetBytes(ctx context.Context, u string) ([]byte, error) {
 	}
 	return b, err
 }
+
+// Head returns the Content-Length of a resource (-1 when unknown).
+func (c *Client) Head(ctx context.Context, u string) (int64, error) {
+	resp, err := c.do(ctx, http.MethodHead, u, nil, 0, "", true)
+	if err != nil {
+		return -1, err
+	}
+	resp.Body.Close()
+	return resp.ContentLength, nil
+}

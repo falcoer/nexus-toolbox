@@ -21,22 +21,30 @@ func TestSplitSnapshotVersion(t *testing.T) {
 
 const snapPom = "<project>\n  <groupId>com.acme</groupId>\n  <artifactId>ghc-web</artifactId>\n  <version>03.27.10-0-SNAPSHOT</version>\n  <packaging>war</packaging>\n</project>\n"
 
+// addBuilds registers snapshot builds of <artifact> (a .pom and optionally a .war per build).
+// File sizes are deliberately not reported, like the real Nexus search API.
+func (f *fake) addBuilds(artifact, pom string, war bool, builds ...string) {
+	base := "com/acme/" + artifact + "/03.27.10-0-SNAPSHOT/" + artifact + "-03.27.10-0-"
+	for _, b := range builds {
+		var assets []nexus.Asset
+		add := func(ext, content string) {
+			f.src[base+b+ext] = content
+			assets = append(assets, nexus.Asset{Path: base + b + ext, DownloadURL: f.srv.URL + "/repository/src/" + base + b + ext,
+				Checksum: map[string]string{"sha1": sum(content)}})
+		}
+		add(".pom", pom)
+		if war {
+			add(".war", "WAR-"+b)
+		}
+		f.snap = append(f.snap, nexus.Component{ID: "id-" + artifact + "-" + b, Group: "com.acme", Name: artifact, Version: "03.27.10-0-" + b, Assets: assets})
+	}
+}
+
 // snapshot fixture modelled on the Nexus UI: three builds, each with .pom and .war.
 func snapFake(t *testing.T, policy string, pom string) *fake {
 	f := newFake(t, policy)
 	f.src = map[string]string{}
-	base := "com/acme/ghc-web/03.27.10-0-SNAPSHOT/ghc-web-03.27.10-0-"
-	for _, b := range []string{"20260914.070210-43", "20260914.084843-44", "20260914.091709-45"} {
-		f.src[base+b+".pom"] = pom
-		f.src[base+b+".war"] = "WAR-" + b
-		var assets []nexus.Asset
-		for _, ext := range []string{".pom", ".war"} {
-			c := f.src[base+b+ext]
-			assets = append(assets, nexus.Asset{Path: base + b + ext, DownloadURL: f.srv.URL + "/repository/src/" + base + b + ext,
-				FileSize: int64(len(c)), Checksum: map[string]string{"sha1": sum(c)}})
-		}
-		f.snap = append(f.snap, nexus.Component{ID: "id-" + b, Group: "com.acme", Name: "ghc-web", Version: "03.27.10-0-" + b, Assets: assets})
-	}
+	f.addBuilds("ghc-web", pom, true, "20260914.070210-43", "20260914.084843-44", "20260914.091709-45")
 	return f
 }
 
@@ -51,7 +59,7 @@ func TestPromoteSnapshotLatestBuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.SourceBuild != "20260914.091709-45" || plan.TargetVersion != "03.27.10-0" || len(plan.Builds) != 3 || plan.SourceID != "id-20260914.091709-45" {
+	if plan.SourceBuild != "20260914.091709-45" || plan.TargetVersion != "03.27.10-0" || len(plan.Builds) != 3 || plan.SourceID != "id-ghc-web-20260914.091709-45" {
 		t.Fatalf("%+v", plan)
 	}
 	paths := []string{}
@@ -84,7 +92,7 @@ func TestPromoteSnapshotLatestBuild(t *testing.T) {
 			t.Errorf("checksum file uploaded: %s", p)
 		}
 	}
-	if len(f.dst) != 3 || f.del[0] != "id-20260914.091709-45" {
+	if len(f.dst) != 3 || f.del[0] != "id-ghc-web-20260914.091709-45" {
 		t.Errorf("dst=%v del=%v", f.dst, f.del)
 	}
 }

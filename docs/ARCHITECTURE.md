@@ -59,6 +59,8 @@ Nexus 3 OSS ne propose pas d'API de promotion (staging = Pro). `promote` = **ren
 4. **vérification** : sha1 servi par la destination = sha1 attendu ; lecture de `maven-metadata.xml` ;
 5. **marqueur** `-promoted-from.txt` (`marker.go`), puis `--delete-source` du composant promu si tout est vérifié.
 
+Avec `--with-parent`, `PlanPromote` se rappelle récursivement pour chaque `<parent>` SNAPSHOT (garde de cycle et profondeur max 5) : le plan contient `Parents` (ancêtre le plus haut d'abord), `ExecutePromote` les exécute avant l'artifact principal et refuse tout dès qu'un conflit ou une référence SNAPSHOT bloque l'un des plans.
+
 Relancer la commande reprend là où elle s'est arrêtée (fichiers identiques ignorés, marqueur existant conservé).
 
 ## Trajectoire MCP (non implémentée)

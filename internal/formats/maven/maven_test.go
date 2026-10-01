@@ -32,13 +32,15 @@ func TestCompareVersions(t *testing.T) {
 }
 
 type fake struct {
-	mu    sync.Mutex
-	src   map[string]string
-	dst   map[string]string
-	del   []string
-	srv   *httptest.Server
-	dstPW string // write policy
-	snap  []nexus.Component
+	mu     sync.Mutex
+	src    map[string]string
+	dst    map[string]string
+	del    []string
+	srv    *httptest.Server
+	dstPW  string // write policy
+	snap   []nexus.Component
+	puts   []string
+	failOn string // PUT paths containing this answer 500
 }
 
 func sum(s string) string { h := sha1.Sum([]byte(s)); return hex.EncodeToString(h[:]) }
@@ -54,7 +56,13 @@ func newFake(t *testing.T, policy string) *fake {
 	})
 	mux.HandleFunc("/service/rest/v1/search", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("maven.baseVersion") != "" {
-			json.NewEncoder(w).Encode(nexus.ComponentPage{Items: f.snap})
+			var items []nexus.Component
+			for _, c := range f.snap {
+				if c.Name == r.URL.Query().Get("name") {
+					items = append(items, c)
+				}
+			}
+			json.NewEncoder(w).Encode(nexus.ComponentPage{Items: items})
 			return
 		}
 		var assets []nexus.Asset
@@ -75,6 +83,11 @@ func newFake(t *testing.T, policy string) *fake {
 		defer f.mu.Unlock()
 		p := strings.TrimPrefix(r.URL.Path, "/repository/dst/")
 		if r.Method == http.MethodPut {
+			if f.failOn != "" && strings.Contains(p, f.failOn) {
+				w.WriteHeader(500)
+				return
+			}
+			f.puts = append(f.puts, p)
 			b, _ := io.ReadAll(r.Body)
 			f.dst[p] = string(b)
 			w.WriteHeader(201)

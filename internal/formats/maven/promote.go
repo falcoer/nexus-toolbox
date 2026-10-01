@@ -21,6 +21,9 @@ import (
 // Nexus 3 OSS has no promote API: promotion = rename + verified copy (+ optional delete of the source).
 // Binary files are copied byte for byte; the pom is rewritten (own version, pinned references).
 
+// maxParentDepth bounds the --with-parent recursion.
+const maxParentDepth = 5
+
 func isGenerated(p string) bool {
 	base := path.Base(p)
 	if strings.HasPrefix(base, "maven-metadata.xml") {
@@ -32,6 +35,13 @@ func isGenerated(p string) bool {
 		}
 	}
 	return false
+}
+
+func short(h string) string {
+	if len(h) > 8 {
+		return h[:8] + "…"
+	}
+	return h
 }
 
 func sha1Hex(b []byte) string { h := sha1.Sum(b); return hex.EncodeToString(h[:]) }
@@ -47,6 +57,7 @@ type resolved struct {
 	builds                                  []string
 	files                                   []srcFile
 	componentIDs                            []string
+	shaIndex                                map[string]string // sha1 → latest snapshot build holding it
 	target                                  string
 }
 
@@ -74,8 +85,14 @@ func resolveSource(ctx context.Context, src module.Target, in module.PromoteInpu
 			return nil, err
 		}
 		r.sourceVersion, r.sourceBuild, r.fileVersion = base+"-SNAPSHOT", b.Key, b.FileVersion
+		r.shaIndex = map[string]string{}
 		for _, o := range builds {
 			r.builds = append(r.builds, o.Key)
+			for _, a := range o.Assets {
+				if h := a.Checksum["sha1"]; h != "" {
+					r.shaIndex[h] = o.Key
+				}
+			}
 			if o != b {
 				for id := range o.Components {
 					if b.Components[id] {
@@ -119,6 +136,15 @@ func (m *Module) PlanPromote(ctx context.Context, src, dst module.Target, in mod
 	if in.Group == "" || in.Artifact == "" || in.Version == "" {
 		return nil, fmt.Errorf("coordonnées incomplètes : group:artifact:version attendus")
 	}
+	self := in.Group + ":" + in.Artifact
+	for _, a := range in.Ancestors {
+		if a == self {
+			return nil, fmt.Errorf("cycle de parents détecté : %s → %s", strings.Join(in.Ancestors, " → "), self)
+		}
+	}
+	if len(in.Ancestors) >= maxParentDepth {
+		return nil, fmt.Errorf("chaîne de parents trop profonde (> %d) : %s", maxParentDepth, strings.Join(in.Ancestors, " → "))
+	}
 	for _, t := range []module.Target{src, dst} {
 		if t.Repo.Format != "maven2" {
 			return nil, fmt.Errorf("%s est de format %s : promote ne supporte que maven2", t.Repo.Alias, t.Repo.Format)
@@ -161,7 +187,8 @@ func (m *Module) PlanPromote(ctx context.Context, src, dst module.Target, in mod
 		if strings.EqualFold(info.Attributes.Maven.VersionPolicy, "SNAPSHOT") {
 			return nil, fmt.Errorf("%s a une version policy SNAPSHOT : destination invalide pour une release", dst.Repo.Alias)
 		}
-		switch strings.ToUpper(info.Attributes.Storage.WritePolicy) {
+		plan.WritePolicy = strings.ToUpper(info.Attributes.Storage.WritePolicy)
+		switch plan.WritePolicy {
 		case "DENY":
 			return nil, fmt.Errorf("%s est en lecture seule (write policy DENY)", dst.Repo.Alias)
 		case "ALLOW_ONCE":
@@ -186,8 +213,12 @@ func (m *Module) PlanPromote(ctx context.Context, src, dst module.Target, in mod
 		seen[it.Path] = true
 		if f.Rest == ".pom" {
 			hasPom = true
-			if err := rewritePomItem(ctx, src, &it, plan, target, in); err != nil {
+			if err := m.rewritePomItem(ctx, src, dst, &it, plan, target, in); err != nil {
 				return nil, err
+			}
+		} else if it.Size == 0 {
+			if n, err := src.Client.Head(ctx, it.DownloadURL); err == nil && n > 0 {
+				it.Size = n
 			}
 		}
 		plan.Items = append(plan.Items, it)
@@ -200,7 +231,7 @@ func (m *Module) PlanPromote(ctx context.Context, src, dst module.Target, in mod
 	}
 
 	for i := range plan.Items {
-		classify(ctx, dst, &plan.Items[i], in.Force, forceAllowed)
+		classify(ctx, dst, &plan.Items[i], in.Force, forceAllowed, res.shaIndex)
 		if plan.Items[i].Action == "" {
 			return nil, fmt.Errorf("lecture de la destination pour %s impossible", plan.Items[i].Path)
 		}
@@ -218,7 +249,8 @@ func (m *Module) PlanPromote(ctx context.Context, src, dst module.Target, in mod
 }
 
 // rewritePomItem downloads the pom, rewrites it, and records the expected destination sha1.
-func rewritePomItem(ctx context.Context, src module.Target, it *module.PlanItem, plan *module.PromotePlan, target string, in module.PromoteInput) error {
+// With --with-parent, a SNAPSHOT <parent> is planned for promotion first and pinned in the pom.
+func (m *Module) rewritePomItem(ctx context.Context, src, dst module.Target, it *module.PlanItem, plan *module.PromotePlan, target string, in module.PromoteInput) error {
 	raw, err := src.Client.GetBytes(ctx, it.DownloadURL)
 	if err != nil {
 		return fmt.Errorf("lecture du pom source : %w", err)
@@ -226,11 +258,37 @@ func rewritePomItem(ctx context.Context, src module.Target, it *module.PlanItem,
 	if it.SourceSHA1 != "" && !strings.EqualFold(sha1Hex(raw), it.SourceSHA1) {
 		return fmt.Errorf("pom source : sha1 téléchargé ≠ sha1 annoncé par Nexus")
 	}
-	pr, err := RewritePom(raw, target, in.Pins)
+	pins := in.Pins
+	pr, err := RewritePom(raw, target, pins)
 	if err != nil {
 		return err
 	}
-	if !pr.HasVersion {
+	if par := pr.Parent; par != nil && in.WithParent && IsSnapshot(par.Version) {
+		pin, explicit := findPin(in.Pins, par.Group, par.Artifact)
+		sub := module.PromoteInput{Group: par.Group, Artifact: par.Artifact, Version: par.Version,
+			Pins: in.Pins, AllowSnapshotRefs: in.AllowSnapshotRefs, NoMarker: in.NoMarker, Force: in.Force,
+			WithParent: true, Tool: in.Tool, Ancestors: append(append([]string(nil), in.Ancestors...), in.Group+":"+in.Artifact)}
+		if explicit {
+			sub.AsVersion = pin.Version
+		}
+		pp, err := m.PlanPromote(ctx, src, dst, sub)
+		if err != nil {
+			return fmt.Errorf("parent %s:%s:%s : %w\n  → promouvez-le séparément puis utilisez --pin %s:%s=<version>", par.Group, par.Artifact, par.Version, err, par.Group, par.Artifact)
+		}
+		// flatten: ancestors first, then this parent
+		plan.Parents = append(plan.Parents, pp.Parents...)
+		pp.Parents = nil
+		plan.Parents = append(plan.Parents, pp)
+		if !explicit {
+			pins = append(append([]module.Pin(nil), in.Pins...), module.Pin{Group: par.Group, Artifact: par.Artifact, Version: pp.TargetVersion})
+		}
+		if pr, err = RewritePom(raw, target, pins); err != nil {
+			return err
+		}
+	} else if par != nil {
+		checkParentInDestination(ctx, dst, plan, par, pins)
+	}
+	if !pr.HasVersion && pr.Parent == nil {
 		plan.Warnings = append(plan.Warnings, "le pom ne déclare pas de <version> propre (héritée du parent) : rien à réécrire")
 	}
 	for _, p := range pr.UnusedPins {
@@ -242,14 +300,43 @@ func rewritePomItem(ctx context.Context, src module.Target, it *module.PlanItem,
 	return nil
 }
 
+func findPin(pins []module.Pin, g, a string) (module.Pin, bool) {
+	for _, p := range pins {
+		if p.Group == g && p.Artifact == a {
+			return p, true
+		}
+	}
+	return module.Pin{}, false
+}
+
+// checkParentInDestination warns when the (final) parent version is absent from the destination.
+func checkParentInDestination(ctx context.Context, dst module.Target, plan *module.PromotePlan, par *ParentRef, pins []module.Pin) {
+	v := par.Version
+	if p, ok := findPin(pins, par.Group, par.Artifact); ok {
+		v = p.Version
+	}
+	if v == "" || IsSnapshot(v) || strings.Contains(v, "${") {
+		return // SNAPSHOT refs are reported as blocking separately
+	}
+	p := strings.ReplaceAll(par.Group, ".", "/") + "/" + par.Artifact + "/" + v + "/" + par.Artifact + "-" + v + ".pom"
+	if _, err := dst.Client.GetText(ctx, dst.Client.RepoURL(dst.Repo.Name, p+".sha1")); nexus.IsNotFound(err) {
+		plan.Warnings = append(plan.Warnings, fmt.Sprintf("le parent %s:%s:%s est absent de %s : la release ne serait pas résolvable (promouvez-le, ou utilisez --with-parent)", par.Group, par.Artifact, v, dst.Repo.Alias))
+	}
+}
+
 // classify compares an item with what the destination already holds.
-func classify(ctx context.Context, dst module.Target, it *module.PlanItem, force, forceAllowed bool) {
+func classify(ctx context.Context, dst module.Target, it *module.PlanItem, force, forceAllowed bool, shaIndex map[string]string) {
 	remote, err := dst.Client.GetText(ctx, dst.Client.RepoURL(dst.Repo.Name, it.Path+".sha1"))
 	switch {
 	case err == nil && remote != "" && strings.EqualFold(remote, it.SHA1):
 		it.Action, it.Reason = "skip", "déjà présent et identique"
 	case err == nil:
-		it.Action, it.Reason = "conflict", "existe déjà avec un contenu différent"
+		it.Action, it.Reason = "conflict", fmt.Sprintf("existe déjà avec un contenu différent (sha1 destination %s ≠ attendu %s)", short(remote), short(it.SHA1))
+		it.RemoteSHA1 = remote
+		if b, ok := shaIndex[strings.ToLower(remote)]; ok {
+			it.MatchBuild = b
+			it.Reason += " ; identique au build " + b
+		}
 		if force && forceAllowed {
 			it.Action, it.Reason = "copy", "écrase la version existante (--force)"
 		} else if force {
@@ -301,7 +388,24 @@ func (m *Module) ExecutePromote(ctx context.Context, src, dst module.Target, pla
 	if refs := plan.BlockingRefs(); len(refs) > 0 {
 		return nil, fmt.Errorf("%d référence(s) SNAPSHOT dans le pom : promotion annulée", len(refs))
 	}
-	res := &module.PromoteResult{}
+	res := &module.PromoteResult{MetadataOK: true}
+	// Parents first (highest ancestor first): never promote a child without its parent.
+	for _, par := range plan.Parents {
+		pr, err := m.ExecutePromote(ctx, src, dst, par, rep)
+		if pr != nil {
+			res.Copied += pr.Copied
+			res.Skipped += pr.Skipped
+			res.MarkerWritten = res.MarkerWritten || pr.MarkerWritten
+			res.MetadataOK = res.MetadataOK && pr.MetadataOK
+			res.Warnings = append(res.Warnings, pr.Warnings...)
+			for _, f := range pr.Failed {
+				res.Failed = append(res.Failed, par.Artifact+" : "+f)
+			}
+		}
+		if err != nil {
+			return res, err
+		}
+	}
 	var files []module.PlanItem
 	var marker *module.PlanItem
 	for i := range plan.Items {
@@ -342,8 +446,9 @@ func (m *Module) ExecutePromote(ctx context.Context, src, dst module.Target, pla
 	}
 
 	md, err := dst.Client.GetBytes(ctx, dst.Client.RepoURL(dst.Repo.Name, strings.ReplaceAll(plan.Group, ".", "/")+"/"+plan.Artifact+"/maven-metadata.xml"))
-	res.MetadataOK = err == nil && bytes.Contains(md, []byte("<version>"+plan.TargetVersion+"</version>"))
-	if !res.MetadataOK {
+	mdOK := err == nil && bytes.Contains(md, []byte("<version>"+plan.TargetVersion+"</version>"))
+	res.MetadataOK = res.MetadataOK && mdOK
+	if !mdOK {
 		res.Warnings = append(res.Warnings, fmt.Sprintf("maven-metadata.xml de %s:%s ne liste pas encore %s : lancez la tâche Nexus « Rebuild Maven repository metadata »", plan.Group, plan.Artifact, plan.TargetVersion))
 	}
 

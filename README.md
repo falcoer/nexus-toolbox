@@ -28,6 +28,7 @@ nexus promote snap rel com.acme:ghc-web:03.27.10-0-SNAPSHOT --dry-run
 nexus promote snap rel com.acme:ghc-web:03.27.10-0-SNAPSHOT                    # → 03.27.10-0, build le plus récent
 nexus promote snap rel com.acme:ghc-web:03.27.10-0-SNAPSHOT --build 43 --as-version 03.27.10-1
 nexus promote snap rel com.acme:ghc-web:03.27.10-0-SNAPSHOT --pin com.acme:parent=1.0
+nexus promote snap rel com.acme:ghc-web:03.27.10-0-SNAPSHOT --with-parent --dry-run   # promeut aussi le(s) parent(s) SNAPSHOT
 nexus promote snap rel com.acme:quality-core:1.4.2 --delete-source             # version déjà figée
 ```
 
