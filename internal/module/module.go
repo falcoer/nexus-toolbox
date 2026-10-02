@@ -86,6 +86,7 @@ type PromoteInput struct {
 	WithParent        bool              `json:"with_parent,omitempty"`      // also promote SNAPSHOT parent poms, ancestors first
 	Ancestors         []string          `json:"-"`                          // group:artifact chain being planned (cycle/depth guard)
 	Force             bool              `json:"force,omitempty"`
+	AllowMissing      []string          `json:"allow_missing,omitempty"` // "group:artifact" or "artifact": required modules that may be absent from the destination (warning, not blocker)
 	DeleteSource      bool              `json:"delete_source,omitempty"`
 	Tool              string            `json:"-"` // "nexus-toolbox x.y.z", written in the marker file
 }

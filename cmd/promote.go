@@ -79,6 +79,7 @@ Nexus OSS n'a pas d'API de promotion : la copie est vérifiée fichier par fichi
 	f.StringVar(&in.AsVersion, "as-version", "", "version cible (forme complète ; sinon 2e argument)")
 	f.StringArrayVar(&pins, "pin", nil, "avancé : impose la version d'un parent/une dépendance, groupId:artifactId=version (répétable)")
 	f.StringArrayVar(&setProps, "set-property", nil, "avancé : impose la valeur d'une propriété du pom, nom=valeur (répétable)")
+	f.StringArrayVar(&in.AllowMissing, "allow-missing", nil, "avancé : accepte qu'un module requis soit absent de la release (groupId:artifactId ou artifactId, répétable) ; il n'est pas publié, la référence est conservée")
 	f.BoolVar(&in.AlignProperties, "align-properties", false, "avancé : reprend les propriétés du pom déjà publié en release à la version cible")
 	f.BoolVar(&in.AllowSnapshotRefs, "allow-snapshot-refs", false, "avancé : autorise les références -SNAPSHOT restantes dans le pom")
 	f.BoolVar(&in.ReleaseProperties, "release-properties", false, "ancienne option (les propriétés sont résolues par le plan)")

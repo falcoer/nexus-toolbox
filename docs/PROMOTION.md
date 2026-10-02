@@ -70,3 +70,13 @@ et l'ancienne forme complète `nexus promote <src> <dst> <groupId:artifactId:ver
 
 - Les binaires (`.zip`, `.jar`, `.war`) sont copiés tels quels : leur contenu interne (noms de dossiers, métadonnées) garde la version SNAPSHOT du build. Pour qu'il porte la version de la release, il faut le corriger à la source (assembly) et rebuilder.
 - Seules les références écrites dans les poms de la chaîne sont suivies (pas les dépendances transitives).
+
+## Module bloquant qui n'est pas utilisé par le build
+
+L'outil suit les poms de tous les modules requis : il peut exiger un artifact qui n'apparaît que dans un `<dependencyManagement>` ou une propriété héritée et que votre build n'utilise pas. Vérifiez avec `mvn dependency:tree` ; si l'artifact n'y figure pas, acceptez son absence explicitement :
+
+```
+nexus promote sias-transcoder 18.00.00.beta1-0 --allow-missing fox-service --allow-missing com.arcelormittal.frm2-util:db-util
+```
+
+Le module est alors « ignoré » : il n'est pas publié, le pom qui le référence pointe vers une version inexistante en release (avertissement dans le plan). Si l'artifact est réellement utilisé, préférez `--pin` / `--set-property` vers une version existante.

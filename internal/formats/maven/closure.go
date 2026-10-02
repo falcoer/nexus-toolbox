@@ -64,6 +64,13 @@ func (m *Module) resolveNeed(ctx context.Context, src, dst module.Target, in mod
 		st.Status, st.Detail = "promote", "build "+pp.SourceBuild
 		plan.Modules = append(plan.Modules, *st)
 		return target, true, nil
+	case errors.Is(err, ErrNoBuild) && allowedMissing(in.AllowMissing, g, n.Artifact):
+		// explicitly accepted by the user: not published, the pom still points at the target version
+		st.Status = "ignored"
+		st.Detail = "absent, ignoré (--allow-missing) : la référence pointe vers un artifact inexistant dans " + dst.Repo.Alias
+		plan.Modules = append(plan.Modules, *st)
+		plan.Warnings = append(plan.Warnings, fmt.Sprintf("%s:%s:%s absent de %s : référence conservée (--allow-missing)", g, n.Artifact, target, dst.Repo.Alias))
+		return target, true, nil
 	case errors.Is(err, ErrNoBuild):
 		st.Status = "blocked"
 		st.Detail = m.missingDetail(ctx, src, dst, g, n, target)
@@ -73,6 +80,16 @@ func (m *Module) resolveNeed(ctx context.Context, src, dst module.Target, in mod
 	default:
 		return "", false, err
 	}
+}
+
+// allowedMissing reports whether g:a (or the bare artifactId) is listed in --allow-missing.
+func allowedMissing(list []string, g, a string) bool {
+	for _, x := range list {
+		if x == g+":"+a || x == a {
+			return true
+		}
+	}
+	return false
 }
 
 // missingDetail explains a blocking module and what to do about it.
@@ -101,7 +118,7 @@ func (m *Module) missingDetail(ctx context.Context, src, dst module.Target, g st
 		d += " ; versions snapshot : " + snap
 	}
 	if n.Kind == "property" {
-		return d + fmt.Sprintf(" → --set-property %s=<version> pour viser une version existante", n.Property)
+		return d + fmt.Sprintf(" → --set-property %s=<version> pour viser une version existante, ou --allow-missing %s:%s si le build ne l'utilise pas", n.Property, g, n.Artifact)
 	}
-	return d + fmt.Sprintf(" → --pin %s:%s=<version> pour viser une version existante", g, n.Artifact)
+	return d + fmt.Sprintf(" → --pin %s:%s=<version> pour viser une version existante, ou --allow-missing %s:%s si le build ne l'utilise pas", g, n.Artifact, g, n.Artifact)
 }

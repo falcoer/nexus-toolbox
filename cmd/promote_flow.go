@@ -308,6 +308,8 @@ func printPromotionPlan(plan *module.PromotePlan, from, to string) {
 			mark = e.IconOK() + " " + e.Muted(fmt.Sprintf("%-13s", "en release"))
 		case "promote":
 			mark = e.Arrow() + " " + e.Info(fmt.Sprintf("%-13s", "à promouvoir"))
+		case "ignored":
+			mark = e.IconWarn() + " " + e.Warning(fmt.Sprintf("%-13s", "ignoré"))
 		default:
 			mark = e.IconErr() + " " + e.Error(fmt.Sprintf("%-13s", "bloquant"))
 		}
@@ -359,6 +361,9 @@ func (r *promoteReq) shortCommand() string {
 	add(r.in.AllowSnapshotRefs, "--allow-snapshot-refs")
 	for _, p := range r.pins {
 		parts = append(parts, "--pin", p)
+	}
+	for _, a := range r.in.AllowMissing {
+		parts = append(parts, "--allow-missing", a)
 	}
 	keys := make([]string, 0, len(r.setProps))
 	keys = append(keys, r.setProps...)

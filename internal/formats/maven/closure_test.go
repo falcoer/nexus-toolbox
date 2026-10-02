@@ -221,3 +221,39 @@ func TestClosureDeepParentChainIsPlanned(t *testing.T) {
 		t.Fatalf("modules=%d blockers=%v", len(plan.Modules), plan.Blockers)
 	}
 }
+
+func TestClosureAllowMissingTurnsABlockerIntoAWarning(t *testing.T) {
+	f := reactorFake(t)
+	var kept []nexus.Component
+	for _, c := range f.snap {
+		if c.Name != "swing-b" {
+			kept = append(kept, c)
+		}
+	}
+	f.snap = kept
+	src, dst := f.targets()
+	in := rootIn()
+	in.AllowMissing = []string{"com.acme:swing-b"}
+	plan, err := New().PlanPromote(context.Background(), src, dst, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Blockers) != 0 {
+		t.Fatalf("no blocker expected: %v", plan.Blockers)
+	}
+	if got := statusOf(plan, "swing-b"); got != "ignored:18.0.0-0" {
+		t.Errorf("swing-b: %q", got)
+	}
+	// the ignored module is never published; the others still are
+	for _, p := range plan.Parents {
+		if p.Artifact == "swing-b" {
+			t.Error("an ignored module must not be planned for publication")
+		}
+	}
+	// another missing module that is NOT listed still blocks
+	in.AllowMissing = []string{"com.acme:other"}
+	plan, _ = New().PlanPromote(context.Background(), src, dst, in)
+	if len(plan.Blockers) != 1 {
+		t.Fatalf("unlisted module must still block: %v", plan.Blockers)
+	}
+}
