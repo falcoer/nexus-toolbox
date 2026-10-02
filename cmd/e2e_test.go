@@ -158,4 +158,22 @@ func TestEndToEnd(t *testing.T) {
 		!strings.Contains(e, "déjà promue par nexus") {
 		t.Fatalf("conflict diagnostics: %v", err)
 	}
+	// info: details and direct links
+	out, _, err = run(t, "info", "snap", "com.acme:ghc:1.0-SNAPSHOT", "--links")
+	wantLink := srv.URL + "/nexus/repository/snap/com/acme/ghc/1.0-SNAPSHOT/ghc-1.0-20260914.091709-45.war"
+	if err != nil || !strings.Contains(out, wantLink+"\n") || strings.Contains(out, "Téléchargement") {
+		t.Fatalf("info --links: %q %v", out, err)
+	}
+	out, _, err = run(t, "info", "snap", "com.acme:ghc:1.0-SNAPSHOT", "-o", "table")
+	if err != nil || !strings.Contains(out, "Téléchargement direct") || !strings.Contains(out, "  "+wantLink) ||
+		!strings.Contains(out, "snapshot · build 20260914.091709-45") || !strings.Contains(out, "Répertoire") {
+		t.Fatalf("info table: %q %v", out, err)
+	}
+	out, _, err = run(t, "info", "snap", "com.acme:ghc:1.0-SNAPSHOT", "-o", "json")
+	if err != nil || !strings.Contains(out, `"url": "`+wantLink+`"`) || !strings.Contains(out, `"schema": 1`) {
+		t.Fatalf("info json: %q %v", out, err)
+	}
+	if _, _, err := run(t, "info", "snap", "bad"); err == nil {
+		t.Fatal("bad coordinates must fail")
+	}
 }

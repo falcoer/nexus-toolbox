@@ -25,6 +25,10 @@ type Module interface{ Format() string }
 
 // Capacités optionnelles : un module implémente celles qu'il supporte.
 type Searcher interface { Search(ctx, Target, SearchInput) (Iterator[Hit], error) }
+type Inspector interface {
+    Versions(ctx, Target, group, artifact string) (*ArtifactSummary, error)
+    Inspect(ctx, Target, InspectInput) (*ComponentDetails, error)  // une version/un build, un lien direct par fichier
+}
 type Promoter interface {
     PlanPromote(ctx, src, dst Target, in PromoteInput) (*PromotePlan, error)
     ExecutePromote(ctx, src, dst Target, plan *PromotePlan, rep Reporter) (*PromoteResult, error)

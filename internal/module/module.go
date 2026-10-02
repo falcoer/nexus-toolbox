@@ -197,6 +197,75 @@ type Promoter interface {
 	ExecutePromote(ctx context.Context, src, dst Target, plan *PromotePlan, rep Reporter) (*PromoteResult, error)
 }
 
+// ---- info ----
+
+// VersionInfo is one version of an artifact (a snapshot version groups all its builds).
+type VersionInfo struct {
+	Version  string    `json:"version"`
+	Kind     string    `json:"kind"` // release | snapshot
+	Builds   int       `json:"builds,omitempty"`
+	Files    int       `json:"files"`
+	Modified time.Time `json:"modified,omitzero"`
+}
+
+type InspectInput struct {
+	Group    string `json:"group"`
+	Artifact string `json:"artifact"`
+	Version  string `json:"version"`
+	Build    string `json:"build,omitempty"` // snapshot build: "43" or "20260914.070210-43" (default: latest)
+	All      bool   `json:"all,omitempty"`   // include checksum files and maven-metadata
+}
+
+// FileDetail is one downloadable file of a component.
+type FileDetail struct {
+	Name        string    `json:"name"`
+	Path        string    `json:"path"`
+	URL         string    `json:"url"` // direct download link
+	Size        int64     `json:"size,omitempty"`
+	SHA1        string    `json:"sha1,omitempty"`
+	MD5         string    `json:"md5,omitempty"`
+	ContentType string    `json:"content_type,omitempty"`
+	Modified    time.Time `json:"modified,omitzero"`
+	Uploader    string    `json:"uploader,omitempty"`
+	Generated   bool      `json:"generated,omitempty"` // checksum / metadata file
+}
+
+// ComponentDetails describes one version (or one snapshot build) of an artifact.
+type ComponentDetails struct {
+	Repository   string       `json:"repository"`
+	Format       string       `json:"format"`
+	Type         string       `json:"type,omitempty"`
+	Group        string       `json:"group"`
+	Artifact     string       `json:"artifact"`
+	Version      string       `json:"version"`
+	Kind         string       `json:"kind"`
+	Build        string       `json:"build,omitempty"`
+	Builds       []string     `json:"builds,omitempty"`
+	Files        []FileDetail `json:"files"`
+	TotalSize    int64        `json:"total_size,omitempty"`
+	Published    time.Time    `json:"published,omitzero"`
+	Uploader     string       `json:"uploader,omitempty"`
+	DirectoryURL string       `json:"directory_url"`
+	BrowseURL    string       `json:"browse_url,omitempty"`
+}
+
+// ArtifactSummary lists the versions of an artifact.
+type ArtifactSummary struct {
+	Repository   string        `json:"repository"`
+	Group        string        `json:"group"`
+	Artifact     string        `json:"artifact"`
+	Versions     []VersionInfo `json:"versions"` // oldest first
+	DirectoryURL string        `json:"directory_url"`
+	BrowseURL    string        `json:"browse_url,omitempty"`
+}
+
+type Inspector interface {
+	// Versions lists the versions held by the repository for group:artifact.
+	Versions(ctx context.Context, t Target, group, artifact string) (*ArtifactSummary, error)
+	// Inspect describes one version, with a direct download link per file.
+	Inspect(ctx context.Context, t Target, in InspectInput) (*ComponentDetails, error)
+}
+
 // ---- registry ----
 
 type Registry struct{ mods map[string]Module }
@@ -234,6 +303,9 @@ func Capabilities(m Module) []string {
 	}
 	if _, ok := m.(Promoter); ok {
 		out = append(out, "promote")
+	}
+	if _, ok := m.(Inspector); ok {
+		out = append(out, "info")
 	}
 	return out
 }

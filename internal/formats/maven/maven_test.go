@@ -83,6 +83,18 @@ func newFake(t *testing.T, policy string) *fake {
 			json.NewEncoder(w).Encode(nexus.ComponentPage{Items: items})
 			return
 		}
+		if name := r.URL.Query().Get("name"); name != "" && r.URL.Query().Get("maven.baseVersion") == "" { // version listings
+			var items []nexus.Component
+			for _, c := range f.snap {
+				if c.Name == name {
+					items = append(items, c)
+				}
+			}
+			if len(items) > 0 {
+				json.NewEncoder(w).Encode(nexus.ComponentPage{Items: items})
+				return
+			}
+		}
 		if r.URL.Query().Get("maven.baseVersion") != "" {
 			var items []nexus.Component
 			for _, c := range f.snap {

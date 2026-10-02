@@ -182,6 +182,11 @@ type Asset struct {
 	FileSize     int64             `json:"fileSize"`
 	LastModified time.Time         `json:"lastModified"`
 	Checksum     map[string]string `json:"checksum"`
+	// present on recent Nexus versions only
+	LastDownloaded time.Time `json:"lastDownloaded"`
+	BlobCreated    time.Time `json:"blobCreated"`
+	Uploader       string    `json:"uploader"`
+	UploaderIP     string    `json:"uploaderIp"`
 }
 
 type Component struct {
