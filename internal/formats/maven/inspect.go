@@ -160,7 +160,65 @@ func (m *Module) Inspect(ctx context.Context, t module.Target, in module.Inspect
 	if len(d.Files) == 0 {
 		return nil, fmt.Errorf("%s:%s:%s sans fichier dans %s", in.Group, in.Artifact, in.Version, t.Repo.Alias)
 	}
+	if in.All {
+		// the search API does not list checksum files or maven-metadata: look next to each file
+		for _, f := range probeGenerated(ctx, t, d.Files, in.Group, in.Artifact, versionDir) {
+			d.TotalSize += f.Size
+			d.Files = append(d.Files, f)
+		}
+	}
 	sort.Slice(d.Files, func(i, j int) bool { return d.Files[i].Name < d.Files[j].Name })
 	d.DirectoryURL, d.BrowseURL = dirURLs(t, in.Group, in.Artifact, versionDir)
 	return d, nil
+}
+
+// maxProbes bounds the HEAD requests made to discover checksum and metadata files.
+const maxProbes = 200
+
+// probeGenerated finds the .sha1/.md5 files next to files, and the maven-metadata.xml of the
+// version directory (of the artifact directory when the version has none), with their checksums.
+// Only files that really exist are returned. Metadata names would collide when downloading, so
+// only one maven-metadata.xml is reported.
+func probeGenerated(ctx context.Context, t module.Target, files []module.FileDetail, group, artifact, versionDir string) []module.FileDetail {
+	have := map[string]bool{}
+	for _, f := range files {
+		have[f.Path] = true
+	}
+	var out []module.FileDetail
+	probes := 0
+	try := func(p string) bool {
+		if have[p] || probes >= maxProbes {
+			return false
+		}
+		probes++
+		u := t.Client.RepoURL(t.Repo.Name, p)
+		n, mod, err := t.Client.HeadInfo(ctx, u)
+		if err != nil {
+			return false
+		}
+		have[p] = true
+		if n < 0 {
+			n = 0
+		}
+		out = append(out, module.FileDetail{Name: path.Base(p), Path: p, URL: u, Size: n, Modified: mod, Generated: true})
+		return true
+	}
+	for _, f := range files {
+		if f.Generated {
+			continue
+		}
+		try(f.Path + ".sha1")
+		try(f.Path + ".md5")
+	}
+	gp := strings.ReplaceAll(group, ".", "/") + "/" + artifact
+	meta := gp + "/" + versionDir + "/maven-metadata.xml"
+	if !try(meta) {
+		meta = gp + "/maven-metadata.xml"
+		try(meta)
+	}
+	if have[meta] {
+		try(meta + ".sha1")
+		try(meta + ".md5")
+	}
+	return out
 }

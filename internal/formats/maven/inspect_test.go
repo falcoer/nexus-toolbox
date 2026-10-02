@@ -104,3 +104,66 @@ func TestVersionsGroupsSnapshotBuilds(t *testing.T) {
 		t.Error("unknown artifact must fail")
 	}
 }
+
+// The search API does not list checksum files or maven-metadata: --all must find them next to the files.
+func TestInspectAllProbesChecksumAndMetadataFiles(t *testing.T) {
+	f := snapFake(t, "ALLOW", snapPom)
+	base := "com/acme/ghc-web/03.27.10-0-SNAPSHOT/ghc-web-03.27.10-0-20260914.091709-45"
+	f.src[base+".war.sha1"] = sum("WAR-20260914.091709-45")
+	f.src[base+".war.md5"] = "md5"
+	f.src[base+".pom.sha1"] = "x" // no .pom.md5
+	f.src["com/acme/ghc-web/03.27.10-0-SNAPSHOT/maven-metadata.xml"] = "<metadata/>"
+	f.src["com/acme/ghc-web/03.27.10-0-SNAPSHOT/maven-metadata.xml.sha1"] = "y"
+	f.src["com/acme/ghc-web/maven-metadata.xml"] = "<artifact-level/>" // must not be reported twice
+	src, _ := f.targets()
+	in := module.InspectInput{Group: "com.acme", Artifact: "ghc-web", Version: "03.27.10-0-SNAPSHOT"}
+	d, err := New().Inspect(context.Background(), src, in)
+	if err != nil || len(d.Files) != 2 {
+		t.Fatalf("without --all only the real files: %v %+v", err, d.Files)
+	}
+	in.All = true
+	d, err = New().Inspect(context.Background(), src, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, fl := range d.Files {
+		names = append(names, fl.Name)
+		if strings.HasSuffix(fl.Name, ".sha1") || strings.HasSuffix(fl.Name, ".md5") || fl.Name == "maven-metadata.xml" {
+			if !fl.Generated {
+				t.Errorf("%s must be flagged generated", fl.Name)
+			}
+		}
+	}
+	want := "ghc-web-03.27.10-0-20260914.091709-45.pom,ghc-web-03.27.10-0-20260914.091709-45.pom.sha1,ghc-web-03.27.10-0-20260914.091709-45.war,ghc-web-03.27.10-0-20260914.091709-45.war.md5,ghc-web-03.27.10-0-20260914.091709-45.war.sha1,maven-metadata.xml,maven-metadata.xml.sha1"
+	if strings.Join(names, ",") != want {
+		t.Fatalf("got  %v\nwant %s", names, want)
+	}
+	for _, fl := range d.Files {
+		if fl.Name == "maven-metadata.xml" && !strings.HasSuffix(fl.URL, "/03.27.10-0-SNAPSHOT/maven-metadata.xml") {
+			t.Errorf("version-level metadata expected: %s", fl.URL)
+		}
+		if fl.Size == 0 {
+			t.Errorf("size from HEAD missing for %s", fl.Name)
+		}
+	}
+}
+
+func TestInspectAllFallsBackToArtifactLevelMetadataForReleases(t *testing.T) {
+	f := newFake(t, "ALLOW") // release com.acme:lib:1.0
+	f.src["com/acme/lib/maven-metadata.xml"] = "<metadata/>"
+	src, _ := f.targets()
+	d, err := New().Inspect(context.Background(), src, module.InspectInput{Group: "com.acme", Artifact: "lib", Version: "1.0", All: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, fl := range d.Files {
+		if fl.Name == "maven-metadata.xml" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("exactly one maven-metadata.xml expected, got %d in %+v", n, d.Files)
+	}
+}

@@ -116,7 +116,12 @@ func newFake(t *testing.T, policy string) *fake {
 		w.WriteHeader(204)
 	})
 	mux.HandleFunc("/repository/src/", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, f.src[strings.TrimPrefix(r.URL.Path, "/repository/src/")])
+		c, ok := f.src[strings.TrimPrefix(r.URL.Path, "/repository/src/")]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		io.WriteString(w, c)
 	})
 	mux.HandleFunc("/repository/dst/", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
