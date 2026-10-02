@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -47,7 +49,7 @@ func fakeNexus(t *testing.T) (*httptest.Server, map[string]string) {
 		"assets":[{"path":"com/acme/lib/1.0/lib-1.0.jar","downloadUrl":"%s/nexus/repository/snap/com/acme/lib/1.0/lib-1.0.jar","fileSize":3,"checksum":{"sha1":"%s"}}]}],"continuationToken":null}`, srv.URL, sha(jar))
 	})
 	mux.HandleFunc("/nexus/repository/snap/", func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/pom") {
+		if strings.HasSuffix(r.URL.Path, "/pom") || strings.HasSuffix(r.URL.Path, ".pom") {
 			io.WriteString(w, snapPom)
 			return
 		}
@@ -175,5 +177,33 @@ func TestEndToEnd(t *testing.T) {
 	}
 	if _, _, err := run(t, "info", "snap", "bad"); err == nil {
 		t.Fatal("bad coordinates must fail")
+	}
+	// download: files + sha1 check, idempotent re-run, conflict without --force
+	dl := t.TempDir()
+	out, e, err = run(t, "download", "snap", "com.acme:ghc:1.0-SNAPSHOT", "--dir", dl, "-o", "plain")
+	if err != nil || !strings.Contains(e, "2 téléchargé(s)") || strings.Count(out, "ghc-1.0-20260914.091709-45.") != 2 {
+		t.Fatalf("download: %q %q %v", out, e, err)
+	}
+	if b, rerr := os.ReadFile(filepath.Join(dl, "ghc-1.0-20260914.091709-45.war")); rerr != nil || string(b) != "JAR" {
+		t.Fatalf("downloaded war: %q %v", b, rerr)
+	}
+	if _, e, err = run(t, "download", "snap", "com.acme:ghc:1.0-SNAPSHOT", "--dir", dl); err != nil || !strings.Contains(e, "0 téléchargé(s)") || !strings.Contains(e, "2 déjà présent(s)") {
+		t.Fatalf("re-run must skip identical files: %q %v", e, err)
+	}
+	os.WriteFile(filepath.Join(dl, "ghc-1.0-20260914.091709-45.war"), []byte("LOCAL EDIT"), 0o644)
+	if _, _, err = run(t, "download", "snap", "com.acme:ghc:1.0-SNAPSHOT", "--dir", dl); err == nil {
+		t.Fatal("a different local file must be refused without --force")
+	}
+	if _, _, err = run(t, "download", "snap", "com.acme:ghc:1.0-SNAPSHOT", "--dir", dl, "--force", "--include", "*.war"); err != nil {
+		t.Fatalf("--force: %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dl, "ghc-1.0-20260914.091709-45.war")); string(b) != "JAR" {
+		t.Fatalf("--force must restore the published content: %q", b)
+	}
+	if _, _, err = run(t, "download", "snap", "com.acme:ghc:1.0-SNAPSHOT", "--dir", dl, "--include", "*.nope"); err == nil {
+		t.Fatal("no match must fail")
+	}
+	if _, _, err = run(t, "download", "snap", "com.acme:ghc"); err == nil {
+		t.Fatal("version required")
 	}
 }

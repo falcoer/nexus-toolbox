@@ -60,7 +60,7 @@ n'est pas public.`,
 			if err != nil {
 				return err
 			}
-			return renderDetails(cmd, d, links)
+			return renderDetails(cmd, d, links, args[0])
 		},
 	}
 	f := c.Flags()
@@ -109,7 +109,7 @@ func renderVersions(cmd *cobra.Command, s *module.ArtifactSummary, alias string)
 	return nil
 }
 
-func renderDetails(cmd *cobra.Command, d *module.ComponentDetails, linksOnly bool) error {
+func renderDetails(cmd *cobra.Command, d *module.ComponentDetails, linksOnly bool, alias string) error {
 	e := env
 	switch {
 	case e.Mode() == "json":
@@ -193,6 +193,7 @@ func renderDetails(cmd *cobra.Command, d *module.ComponentDetails, linksOnly boo
 	for _, f := range d.Files {
 		fmt.Fprintf(e.Out, "  %s\n", f.URL)
 	}
+	fmt.Fprintf(e.Err, "%s\n", e.Muted(fmt.Sprintf("tout récupérer : nexus download %s %s:%s:%s", alias, d.Group, d.Artifact, d.Version)))
 	return nil
 }
 

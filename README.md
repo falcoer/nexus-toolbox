@@ -30,7 +30,12 @@ nexus info snap com.acme:ghc-web:03.27.10-0-SNAPSHOT --build 43    # un build pr
 nexus info rel com.acme:ghc-web:03.27.10-0 --links                 # uniquement les URL (scripts : | ForEach-Object …)
 nexus info rel com.acme:ghc-web:03.27.10-0 -o json                 # tout, structuré
 
-# 4. promouvoir un snapshot en release (toujours commencer par --dry-run)
+# 4. télécharger
+nexus download rel com.acme:ghc-web:03.27.10-0                          # dans le dossier courant
+nexus download rel com.acme:ghc-web:03.27.10-0 --dir .\dist --include "*.zip"
+nexus download snap com.acme:ghc-web:03.27.10-0-SNAPSHOT --build 43 --dry-run
+
+# 5. promouvoir un snapshot en release (toujours commencer par --dry-run)
 nexus promote snap rel com.acme:ghc-web:03.27.10-0-SNAPSHOT --dry-run
 nexus promote snap rel com.acme:ghc-web:03.27.10-0-SNAPSHOT                    # → 03.27.10-0, build le plus récent
 nexus promote snap rel com.acme:ghc-web:03.27.10-0-SNAPSHOT --build 43 --as-version 03.27.10-1
@@ -42,6 +47,10 @@ nexus promote snap rel com.acme:quality-core:1.4.2 --delete-source             #
 ### Ce que fait `info`
 
 Sans version : liste des versions (type, builds, fichiers, date). Avec une version : dépôt, type (release ou snapshot + build), date de publication et auteur si Nexus les donne, taille totale, puis un tableau des fichiers (taille, sha1, date) et **un lien de téléchargement direct par fichier**, écrit en clair sur sa propre ligne (Ctrl+clic dans Windows Terminal, VS Code, iTerm2…). Les liens sont construits depuis l'URL enregistrée par `nexus init`, pas depuis celle que Nexus renvoie (qui peut être interne). Les `.sha1`/`.md5` et `maven-metadata.xml` sont masqués sauf `--all`. Les tailles que la recherche Nexus ne renvoie pas sont lues par requête `HEAD` (jusqu'à 40 fichiers). Un repository privé demandera vos identifiants au clic.
+
+### Ce que fait `download`
+
+Télécharge les fichiers d'une version (ceux de `nexus info`) : chacun est écrit en `.part`, comparé au sha1 donné par Nexus, puis renommé, donc un transfert interrompu ou corrompu ne laisse jamais un fichier qui paraît complet. Un fichier local identique est ignoré ; un fichier différent est refusé sauf `--force`. `--include` / `--exclude` filtrent par nom (motifs `*.zip`), `--dry-run` liste sans rien écrire, `--build` choisit un build de snapshot. Les chemins téléchargés sont écrits sur la sortie standard, un par ligne ; relancer la commande après une coupure ne retélécharge que ce qui manque.
 
 ### Ce que fait `promote`
 

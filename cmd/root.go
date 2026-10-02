@@ -70,7 +70,7 @@ func newRoot() *cobra.Command {
 	pf.BoolVar(&flags.Stream, "stream", false, "mode flux : une ligne par résultat, au fil de l'eau")
 	pf.BoolVarP(&flags.Yes, "yes", "y", false, "répond oui aux confirmations")
 	pf.CountVarP(&flags.Verbose, "verbose", "v", "détails (-vv : requêtes HTTP)")
-	root.AddCommand(newInit(), newRepos(), newSearch(), newInfo(), newPromote())
+	root.AddCommand(newInit(), newRepos(), newSearch(), newInfo(), newDownload(), newPromote())
 	return root
 }
 
