@@ -151,6 +151,14 @@ func emitJSON(v any) error {
 }
 
 func printPlan(p *module.PromotePlan) {
+	if len(p.Parents) > 3 && env.Flags.Verbose == 0 {
+		// long chains: the plan table above says it all; per-file details only on request
+		fmt.Fprintf(env.Err, "%s %d modules requis : détail fichier par fichier avec -v\n", env.IconInfo(), len(p.Parents))
+		fmt.Fprintln(env.Err, env.Muted("── artifact principal ──"))
+		printOnePlan(p)
+		printSummary(p)
+		return
+	}
 	for i, par := range p.Parents {
 		fmt.Fprintln(env.Err, env.Muted(fmt.Sprintf("── module requis %d/%d (promu avant l'artifact) ──", i+1, len(p.Parents))))
 		printOnePlan(par)
