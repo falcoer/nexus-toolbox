@@ -260,3 +260,25 @@ func TestGrandparentPinnedToExistingRelease(t *testing.T) {
 		t.Errorf("parent pom must reference root 1.0: %q", f.dst["com/acme/par/03.27.10-0/par-03.27.10-0.pom"])
 	}
 }
+
+// The parent was published by a bare PUT (no .sha1 served): it exists, so no "absent" warning.
+func TestPinnedParentPublishedWithoutChecksumIsNotReportedAbsent(t *testing.T) {
+	f := parentFake(t)
+	f.realSums = true // the destination serves no .sha1 for files nobody uploaded checksums for
+	f.dst["com/acme/par/03.27.10-9/par-03.27.10-9.pom"] = "x"
+	src, dst := f.targets()
+	i := withParent()
+	i.Pins = []module.Pin{{Group: "com.acme", Artifact: "par", Version: "03.27.10-9"}}
+	plan, err := New().PlanPromote(context.Background(), src, dst, i)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range plan.Warnings {
+		if strings.Contains(w, "absent") {
+			t.Errorf("false 'absent' warning: %v", plan.Warnings)
+		}
+	}
+	if len(plan.Parents) != 0 || len(plan.Notes) != 1 || !strings.Contains(plan.Notes[0], "figée sans promotion") {
+		t.Errorf("parents=%d notes=%v", len(plan.Parents), plan.Notes)
+	}
+}

@@ -254,7 +254,7 @@ func (m *Module) PlanPromote(ctx context.Context, src, dst module.Target, in mod
 	markerPath := dstPath(markerSuffix(plan.OriginVersion))
 	existingMarker := ""
 	if conflicts > 0 || !in.NoMarker {
-		existingMarker = findExistingMarker(ctx, dst, in.Group, in.Artifact, target)
+		existingMarker = findExistingMarker(ctx, dst, in.Group, in.Artifact, target, markerPath)
 	}
 	if conflicts > 0 {
 		noteExistingRelease(ctx, dst, plan, existingMarker, markerPath)
@@ -265,7 +265,13 @@ func (m *Module) PlanPromote(ctx context.Context, src, dst module.Target, in mod
 	})
 	if !in.NoMarker {
 		mk := module.PlanItem{Kind: module.KindMarker, Path: markerPath}
-		classifyMarker(ctx, dst, &mk, in.Force, forceAllowed, existingMarker)
+		changes := false
+		for _, it := range plan.Items {
+			if it.Kind == module.KindFile && (it.Action == "copy" || it.MissingChecksums) {
+				changes = true
+			}
+		}
+		classifyMarker(ctx, dst, &mk, in.Force, forceAllowed, existingMarker, changes)
 		plan.Items = append(plan.Items, mk)
 	}
 	if len(in.Ancestors) == 0 {
@@ -385,7 +391,8 @@ func diagnoseConflict(ctx context.Context, dst module.Target, it *module.PlanIte
 
 // findExistingMarker looks for a promotion marker (any origin version) of the release already
 // published at the target version; it returns its repository path, or "".
-func findExistingMarker(ctx context.Context, dst module.Target, group, artifact, version string) string {
+func findExistingMarker(ctx context.Context, dst module.Target, group, artifact, version, prefer string) string {
+	other := ""
 	q := url.Values{"repository": {dst.Repo.Name}, "group": {group}, "name": {artifact}, "version": {version}}
 	token := ""
 	for page := 0; page < 5; page++ {
@@ -399,7 +406,12 @@ func findExistingMarker(ctx context.Context, dst module.Target, group, artifact,
 			}
 			for _, a := range c.Assets {
 				if isMarkerName(path.Base(a.Path)) {
-					return a.Path
+					if a.Path == prefer {
+						return a.Path
+					}
+					if other == "" {
+						other = a.Path
+					}
 				}
 			}
 		}
@@ -407,7 +419,7 @@ func findExistingMarker(ctx context.Context, dst module.Target, group, artifact,
 			break
 		}
 	}
-	return ""
+	return other
 }
 
 // noteExistingRelease records whether the existing release was produced by this tool.
@@ -538,8 +550,7 @@ func checkParentInDestination(ctx context.Context, dst module.Target, plan *modu
 	if v == "" || IsSnapshot(v) || strings.Contains(v, "${") {
 		return // SNAPSHOT refs are reported as blocking separately
 	}
-	p := strings.ReplaceAll(par.Group, ".", "/") + "/" + par.Artifact + "/" + v + "/" + par.Artifact + "-" + v + ".pom"
-	if _, err := dst.Client.GetText(ctx, dst.Client.RepoURL(dst.Repo.Name, p+".sha1")); nexus.IsNotFound(err) {
+	if !releasedInDestination(ctx, dst, par.Group, par.Artifact, v) {
 		plan.Warnings = append(plan.Warnings, fmt.Sprintf("le parent %s:%s:%s est absent de %s : la release ne serait pas résolvable (promouvez-le, ou utilisez --with-parent)", par.Group, par.Artifact, v, dst.Repo.Alias))
 	}
 }
@@ -594,9 +605,11 @@ func classifyWithoutChecksum(ctx context.Context, dst module.Target, it *module.
 	markConflict(it, sha, force, forceAllowed, shaIndex)
 }
 
-// classifyMarker never conflicts: an existing marker (whatever its origin version) is kept,
-// since its content embeds a date. existing is the marker found in the destination, if any.
-func classifyMarker(ctx context.Context, dst module.Target, it *module.PlanItem, force, forceAllowed bool, existing string) {
+// classifyMarker never conflicts. A marker of the same origin is kept (replaced with --force).
+// A marker of another origin is kept too, but when this run changes files a new marker is added
+// next to it: the old one would otherwise describe a build that is no longer what is published
+// (the most recent marker, by promoted-at, is authoritative; the others are history).
+func classifyMarker(ctx context.Context, dst module.Target, it *module.PlanItem, force, forceAllowed bool, existing string, changes bool) {
 	if existing == "" {
 		if _, err := dst.Client.GetText(ctx, dst.Client.RepoURL(dst.Repo.Name, it.Path+".sha1")); err == nil {
 			existing = it.Path
@@ -609,6 +622,8 @@ func classifyMarker(ctx context.Context, dst module.Target, it *module.PlanItem,
 		it.Action = "copy"
 	case existing == it.Path && force && forceAllowed:
 		it.Action, it.Reason = "copy", "remplace le marqueur existant (--force)"
+	case existing != it.Path && changes:
+		it.Action, it.Reason = "copy", "nouvelle origine : s'ajoute au marqueur existant ("+path.Base(existing)+"), conservé comme historique"
 	default:
 		it.Action, it.Reason = "skip", "marqueur déjà présent ("+path.Base(existing)+"), conservé"
 	}

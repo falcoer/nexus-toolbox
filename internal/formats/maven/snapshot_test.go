@@ -238,7 +238,9 @@ func TestMarkerNameCarriesOriginVersion(t *testing.T) {
 	}
 }
 
-func TestExistingMarkerOfAnotherOriginIsKept(t *testing.T) {
+// Files are about to change (new build): the old marker is kept as history, a new one is added
+// so the published provenance is not stale.
+func TestMarkerOfAnotherOriginIsKeptAndNewOneAdded(t *testing.T) {
 	f := snapFake(t, "ALLOW", snapPom)
 	src, dst := f.targets()
 	old := "com/acme/ghc-web/03.27.10-0/ghc-web-03.27.10-0-promoted-from-03.27.10-0-20260914.070210-43.txt"
@@ -248,17 +250,40 @@ func TestExistingMarkerOfAnotherOriginIsKept(t *testing.T) {
 		t.Fatal(err)
 	}
 	mk := plan.Items[len(plan.Items)-1]
-	if mk.Action != "skip" || !strings.Contains(mk.Reason, "promoted-from-03.27.10-0-20260914.070210-43.txt") {
-		t.Fatalf("an existing marker must be kept: %+v", mk)
+	if mk.Action != "copy" || !strings.Contains(mk.Reason, "historique") || !strings.HasSuffix(mk.Path, "promoted-from-03.27.10-0-20260914.091709-45.txt") {
+		t.Fatalf("a new marker must be added: %+v", mk)
 	}
-	if _, err := New().ExecutePromote(context.Background(), src, dst, plan, noRep{}); err == nil {
-		// .war/.pom are new files here so the promotion itself succeeds; no second marker may appear
+	if _, err := New().ExecutePromote(context.Background(), src, dst, plan, noRep{}); err != nil {
+		t.Fatal(err)
 	}
-	for p := range f.dst {
-		if strings.Contains(p, "promoted-from") && p != old {
-			t.Errorf("second marker written: %s", p)
-		}
+	if _, ok := f.dst[old]; !ok {
+		t.Error("the previous marker must be kept")
 	}
+	if f.dst[strings.Replace(old, "20260914.070210-43", "20260914.091709-45", 1)] == "" {
+		t.Error("new marker missing")
+	}
+}
+
+// Nothing changes (everything identical): no new marker, the existing one stays authoritative.
+func TestNoNewMarkerWhenNothingChanges(t *testing.T) {
+	f := snapFake(t, "ALLOW", snapPom)
+	src, dst := f.targets()
+	if _, err := New().ExecutePromote(context.Background(), src, dst, mustPlan(t, src, dst, snapIn), noRep{}); err != nil {
+		t.Fatal(err)
+	}
+	plan := mustPlan(t, src, dst, snapIn) // same build again: every file identical
+	mk := plan.Items[len(plan.Items)-1]
+	if mk.Action != "skip" {
+		t.Fatalf("identical re-run must not add a marker: %+v", mk)
+	}
+}
+
+func mustPlan(t *testing.T, src, dst module.Target, in module.PromoteInput) *module.PromotePlan {
+	p, err := New().PlanPromote(context.Background(), src, dst, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
 }
 
 func TestMarkerFailureIsNotFatalButBlocksSourceDeletion(t *testing.T) {
