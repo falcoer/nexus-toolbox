@@ -338,7 +338,7 @@ func Capabilities(m Module) []string {
 		out = append(out, "promote")
 	}
 	if _, ok := m.(Inspector); ok {
-		out = append(out, "info")
+		out = append(out, "info", "download") // download is built on Inspect
 	}
 	return out
 }
