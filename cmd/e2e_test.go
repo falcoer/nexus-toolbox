@@ -16,6 +16,9 @@ import (
 	"github.com/falcoer/nexus-toolbox/internal/ui"
 )
 
+// relWritePolicy is what the fake release repository reports (tests may change it).
+var relWritePolicy = "ALLOW_ONCE"
+
 const snapPom = "<project><artifactId>ghc</artifactId><version>1.0-SNAPSHOT</version></project>"
 
 func sha(s string) string { h := sha1.Sum([]byte(s)); return hex.EncodeToString(h[:]) }
@@ -50,8 +53,8 @@ func fakeNexus(t *testing.T) (*httptest.Server, map[string]string) {
 			w.WriteHeader(401)
 			return
 		}
-		io.WriteString(w, `[{"name":"snap","format":"maven2","type":"hosted","attributes":{"maven":{"versionPolicy":"MIXED"}}},
-			{"name":"rel","format":"maven2","type":"hosted","attributes":{"maven":{"versionPolicy":"RELEASE"},"storage":{"writePolicy":"ALLOW_ONCE"}}}]`)
+		fmt.Fprintf(w, `[{"name":"snap","format":"maven2","type":"hosted","attributes":{"maven":{"versionPolicy":"MIXED"}}},
+			{"name":"rel","format":"maven2","type":"hosted","attributes":{"maven":{"versionPolicy":"RELEASE"},"storage":{"writePolicy":%q}}}]`, relWritePolicy)
 	})
 	snapFiles := map[string]string{}
 	mux.HandleFunc("/nexus/service/rest/v1/search", func(w http.ResponseWriter, r *http.Request) {

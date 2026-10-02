@@ -118,3 +118,25 @@ func TestWizardNeedsATerminalAndALegacyFormStillWorks(t *testing.T) {
 		t.Fatalf("legacy form: %v\n%s", err, e)
 	}
 }
+
+func TestConflictSuggestsTheForceCommand(t *testing.T) {
+	relWritePolicy = "ALLOW" // redeploy allowed: --force can replace published files
+	t.Cleanup(func() { relWritePolicy = "ALLOW_ONCE" })
+	dst, _ := setupRepos(t)
+	run(t, "repos", "link", "snap", "rel")
+	dst["com/acme/ghc/2.0/ghc-2.0.war"] = "OTHER" // already published with another content
+	_, e, err := run(t, "promote", "ghc", "2.0", "--yes")
+	if err == nil || !strings.Contains(e, "Pour remplacer") || !strings.Contains(e, "nexus promote ghc 2.0 --force") {
+		t.Fatalf("the exact --force command must be offered:\n%s\n%v", e, err)
+	}
+}
+
+func TestConflictWithAllowOnceExplainsInsteadOfSuggestingForce(t *testing.T) {
+	dst, _ := setupRepos(t)
+	run(t, "repos", "link", "snap", "rel")
+	dst["com/acme/ghc/2.0/ghc-2.0.war"] = "OTHER"
+	_, e, err := run(t, "promote", "ghc", "2.0", "--yes")
+	if err == nil || strings.Contains(e, "Pour remplacer") || !strings.Contains(err.Error(), "ALLOW_ONCE") {
+		t.Fatalf("with ALLOW_ONCE --force cannot help: %v\n%s", err, e)
+	}
+}

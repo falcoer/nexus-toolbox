@@ -218,6 +218,14 @@ func runPromote(cmd *cobra.Command, req *promoteReq) error {
 	}
 	if problems := blockingProblems(plan, dst.Repo.Alias); len(problems) > 0 {
 		recap(req)
+		if len(plan.Blocking()) > 0 && plan.WritePolicy != "ALLOW_ONCE" && !req.in.Force {
+			// give the exact command that replaces the published files
+			r2 := *req
+			r2.in.Force = true
+			if c := r2.shortCommand(); c != "" {
+				fmt.Fprintf(env.Err, "%s\n  %s\n", env.Muted("Pour remplacer les fichiers publiés (relisez d'abord le plan) :"), c)
+			}
+		}
 		return errors.New(strings.Join(problems, "\n"))
 	}
 	extra := len(plan.Parents)
