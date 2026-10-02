@@ -22,8 +22,9 @@ import (
 // Nexus 3 OSS has no promote API: promotion = rename + verified copy (+ optional delete of the source).
 // Binary files are copied byte for byte; the pom is rewritten (own version, pinned references).
 
-// maxParentDepth bounds the --with-parent recursion.
-const maxParentDepth = 5
+// maxModules bounds the number of required modules planned in one chain
+// (cycles are cut by ChainState.Seen; this only guards against runaway graphs).
+const maxModules = 100
 
 func isGenerated(p string) bool {
 	base := path.Base(p)
@@ -142,11 +143,11 @@ func (m *Module) PlanPromote(ctx context.Context, src, dst module.Target, in mod
 	self := in.Group + ":" + in.Artifact
 	for _, a := range in.Ancestors {
 		if a == self {
-			return nil, fmt.Errorf("cycle de parents détecté : %s → %s", strings.Join(in.Ancestors, " → "), self)
+			return nil, fmt.Errorf("cycle de modules requis détecté : %s → %s", strings.Join(in.Ancestors, " → "), self)
 		}
 	}
-	if len(in.Ancestors) >= maxParentDepth {
-		return nil, fmt.Errorf("chaîne de parents trop profonde (> %d) : %s", maxParentDepth, strings.Join(in.Ancestors, " → "))
+	if in.Chain != nil && len(in.Chain.Seen) > maxModules {
+		return nil, fmt.Errorf("plus de %d modules requis (chaîne : %s) : vérifiez les références SNAPSHOT, --pin ou --set-property", maxModules, strings.Join(in.Ancestors, " → "))
 	}
 	for _, t := range []module.Target{src, dst} {
 		if t.Repo.Format != "maven2" {

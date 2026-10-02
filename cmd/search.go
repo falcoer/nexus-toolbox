@@ -52,6 +52,9 @@ func newSearch() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			m, t, err := resolve(args[0])
 			if err != nil {
+				if len(args) == 1 {
+					err = fmt.Errorf("%w\n  → syntaxe : nexus search <repo> <terme> (ex. nexus search snap %s)", err, args[0])
+				}
 				return err
 			}
 			s, ok := m.(module.Searcher)

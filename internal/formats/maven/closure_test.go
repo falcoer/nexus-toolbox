@@ -196,3 +196,28 @@ func TestClosureNeededTwiceIsPlannedOnce(t *testing.T) {
 		t.Error("a literal SNAPSHOT dependency must be fixed to the planned version")
 	}
 }
+
+// A real reactor nests parents far deeper than a handful of levels: the plan must still be complete.
+func TestClosureDeepParentChainIsPlanned(t *testing.T) {
+	noWait(t)
+	f := newFake(t, "ALLOW")
+	f.src, f.snap = map[string]string{}, nil
+	const depth = 9
+	name := func(i int) string { return "m" + string(rune('a'+i)) }
+	for i := 0; i < depth; i++ {
+		pom := "<project><artifactId>" + name(i) + "</artifactId><version>1.0-SNAPSHOT</version></project>"
+		if i+1 < depth {
+			pom = "<project><parent><groupId>com.acme</groupId><artifactId>" + name(i+1) + "</artifactId><version>1.0-SNAPSHOT</version></parent>" +
+				"<artifactId>" + name(i) + "</artifactId><version>1.0-SNAPSHOT</version></project>"
+		}
+		f.addVersionBuilds(name(i), "1.0", pom, "20260914.010000-1")
+	}
+	src, dst := f.targets()
+	plan, err := New().PlanPromote(context.Background(), src, dst, module.PromoteInput{Group: "com.acme", Artifact: name(0), Version: "1.0-SNAPSHOT", WithParent: true, NoMarker: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Blockers) != 0 || len(plan.Modules) != depth-1 { // the root is not listed
+		t.Fatalf("modules=%d blockers=%v", len(plan.Modules), plan.Blockers)
+	}
+}
