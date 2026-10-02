@@ -104,8 +104,9 @@ func TestWithParentChainOfTwoAndCycle(t *testing.T) {
 	f2.addBuilds("par", pomWithParent("par", "root"), false, "20260914.060000-2")
 	f2.addBuilds("root", pomWithParent("root", "par"), false, "20260914.010000-1")
 	s2, d2 := f2.targets()
-	if _, err := New().PlanPromote(context.Background(), s2, d2, withParent()); err == nil || !strings.Contains(err.Error(), "cycle") {
-		t.Fatalf("cycle expected: %v", err)
+	cyc, err := New().PlanPromote(context.Background(), s2, d2, withParent())
+	if err != nil || len(cyc.Parents) != 2 {
+		t.Fatalf("a parent cycle must be cut, not looped on: %v %+v", err, cyc)
 	}
 }
 
@@ -129,8 +130,12 @@ func TestWithParentExplicitPinWinsAndMissingParent(t *testing.T) {
 	f2 := parentFake(t)
 	f2.snap = f2.snap[:2] // keep only ghc-web builds
 	s2, d2 := f2.targets()
-	if _, err := New().PlanPromote(context.Background(), s2, d2, withParent()); err == nil || !strings.Contains(err.Error(), "--pin com.acme:par=<version>") {
-		t.Fatalf("clear error expected: %v", err)
+	bp, err := New().PlanPromote(context.Background(), s2, d2, withParent())
+	if err != nil || len(bp.Blockers) != 1 || !strings.Contains(bp.Blockers[0], "--pin com.acme:par=<version>") {
+		t.Fatalf("a module found nowhere must be a blocker with a hint: %v %+v", err, bp.Blockers)
+	}
+	if _, err := New().ExecutePromote(context.Background(), s2, d2, bp, noRep{}); err == nil || len(f2.puts) != 0 {
+		t.Fatalf("a blocked plan must write nothing: %v %v", err, f2.puts)
 	}
 }
 
@@ -193,17 +198,17 @@ func TestConflictDiagnosisAndSizeFromHead(t *testing.T) {
 	}
 }
 
-func TestNoBuildHintSuggestsExistingRelease(t *testing.T) {
+func TestParentWithoutSnapshotBuildButReleasedIsFoundAutomatically(t *testing.T) {
 	f := parentFake(t)
 	f.snap = f.snap[:2] // par has no snapshot build
 	f.dst["com/acme/par/03.27.10-0/par-03.27.10-0.pom"] = "x"
 	src, dst := f.targets()
-	_, err := New().PlanPromote(context.Background(), src, dst, withParent())
-	if err == nil || !strings.Contains(err.Error(), "existe déjà dans dst : utilisez --pin com.acme:par=03.27.10-0") {
-		t.Fatalf("hint expected: %v", err)
+	plan, err := New().PlanPromote(context.Background(), src, dst, withParent())
+	if err != nil || len(plan.Blockers) != 0 || len(plan.Parents) != 0 || len(plan.BlockingRefs()) != 0 {
+		t.Fatalf("no option needed: %v %+v", err, plan)
 	}
-	if strings.Count(err.Error(), "→") != 1 {
-		t.Errorf("exactly one hint expected: %v", err)
+	if len(plan.Modules) != 1 || plan.Modules[0].Status != "released" || plan.Modules[0].Version != "03.27.10-0" {
+		t.Errorf("modules: %+v", plan.Modules)
 	}
 }
 
@@ -218,8 +223,8 @@ func TestPinnedParentAlreadyReleasedIsNotPromoted(t *testing.T) {
 	if err != nil || len(plan.Parents) != 0 || len(plan.BlockingRefs()) != 0 {
 		t.Fatalf("%v %+v", err, plan)
 	}
-	if len(plan.Notes) != 1 || !strings.Contains(plan.Notes[0], "figée sans promotion") {
-		t.Errorf("notes: %v", plan.Notes)
+	if len(plan.Modules) != 1 || plan.Modules[0].Status != "released" || plan.Modules[0].Version != "03.27.10-9" {
+		t.Errorf("modules: %+v", plan.Modules)
 	}
 	if _, err := New().ExecutePromote(context.Background(), src, dst, plan, noRep{}); err != nil {
 		t.Fatal(err)
@@ -243,9 +248,10 @@ func TestGrandparentPinnedToExistingRelease(t *testing.T) {
 	f.dst["com/acme/root/1.0/root-1.0.pom"] = "x"
 	src, dst := f.targets()
 	// without the pin: one clear hint on the innermost failure
-	if _, err := New().PlanPromote(context.Background(), src, dst, withParent()); err == nil || strings.Count(err.Error(), "→") != 1 ||
-		!strings.Contains(err.Error(), "--pin com.acme:root=") {
-		t.Fatalf("single hint on root expected: %v", err)
+	bp, err := New().PlanPromote(context.Background(), src, dst, withParent())
+	if err != nil || len(bp.Blockers) != 1 || !strings.Contains(bp.Blockers[0], "versions en release : 1.0") ||
+		!strings.Contains(bp.Blockers[0], "--pin com.acme:root=<version>") {
+		t.Fatalf("blocker with the release versions expected: %v %+v", err, bp.Blockers)
 	}
 	i := withParent()
 	i.Pins = []module.Pin{{Group: "com.acme", Artifact: "root", Version: "1.0"}}
@@ -278,7 +284,7 @@ func TestPinnedParentPublishedWithoutChecksumIsNotReportedAbsent(t *testing.T) {
 			t.Errorf("false 'absent' warning: %v", plan.Warnings)
 		}
 	}
-	if len(plan.Parents) != 0 || len(plan.Notes) != 1 || !strings.Contains(plan.Notes[0], "figée sans promotion") {
-		t.Errorf("parents=%d notes=%v", len(plan.Parents), plan.Notes)
+	if len(plan.Parents) != 0 || len(plan.Modules) != 1 || plan.Modules[0].Status != "released" {
+		t.Errorf("parents=%d modules=%+v", len(plan.Parents), plan.Modules)
 	}
 }

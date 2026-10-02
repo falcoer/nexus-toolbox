@@ -6,7 +6,6 @@ import (
 	"crypto/md5"
 	"crypto/sha1"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -175,6 +174,13 @@ func (m *Module) PlanPromote(ctx context.Context, src, dst module.Target, in mod
 	if len(res.files) == 0 {
 		return nil, fmt.Errorf("%s:%s:%s sans fichier exploitable", in.Group, in.Artifact, in.Version)
 	}
+	if in.WithParent && in.Chain == nil {
+		in.Chain = &module.ChainState{Seen: map[string]*module.ModuleStatus{}}
+		if IsSnapshot(res.sourceVersion) {
+			in.Chain.RootBase, in.Chain.RootTarget = res.sourceVersion[:len(res.sourceVersion)-len("-SNAPSHOT")], target
+		}
+		in.Chain.Seen[in.Group+":"+in.Artifact+":"+target] = &module.ModuleStatus{Group: in.Group, Artifact: in.Artifact, Version: target, Status: "root"}
+	}
 	plan := &module.PromotePlan{Group: in.Group, Artifact: in.Artifact, Version: in.Version,
 		SourceVersion: res.sourceVersion, OriginVersion: res.fileVersion, SourceBuild: res.sourceBuild, Builds: res.builds, TargetVersion: target,
 		Source: src.Repo.Name, Destination: dst.Repo.Name, Force: in.Force, DeleteSource: in.DeleteSource,
@@ -300,41 +306,40 @@ func (m *Module) rewritePomItem(ctx context.Context, src, dst module.Target, it 
 	if err != nil {
 		return err
 	}
-	promoteParent := pr.Parent != nil && in.WithParent && IsSnapshot(pr.Parent.Version)
-	if promoteParent {
-		par := pr.Parent
-		if pin, ok := findPin(in.Pins, par.Group, par.Artifact); ok && releasedInDestination(ctx, dst, par.Group, par.Artifact, pin.Version) {
-			// pinned to a version the destination already holds: nothing to promote, the pin is enough
-			promoteParent = false
-			plan.Notes = append(plan.Notes, fmt.Sprintf("parent %s:%s:%s déjà présent dans %s : référence figée sans promotion", par.Group, par.Artifact, pin.Version, dst.Repo.Alias))
+	if in.WithParent && in.Chain != nil {
+		// Follow every SNAPSHOT module the pom needs: parent, dependencies, BOMs and libraries
+		// designated by properties. Each one is "released" (already in the destination),
+		// "promote" (planned first) or "blocked" (found nowhere).
+		resolved := false
+		targets := map[string]string{}
+		newPins := append([]module.Pin(nil), in.Pins...)
+		seen := map[string]bool{}
+		for _, need := range pr.Needs {
+			k := need.Kind + "|" + need.Group + "|" + need.Artifact + "|" + need.Property
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			v, ok, err := m.resolveNeed(ctx, src, dst, in, plan, need)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				continue
+			}
+			resolved = true
+			if need.Kind == "property" {
+				targets[need.Property] = v
+			} else if _, pinned := findPin(newPins, strings.ReplaceAll(need.Group, "${project.groupId}", in.Group), need.Artifact); !pinned {
+				newPins = append(newPins, module.Pin{Group: strings.ReplaceAll(need.Group, "${project.groupId}", in.Group), Artifact: need.Artifact, Version: v})
+			}
 		}
-	}
-	if promoteParent {
-		par := pr.Parent
-		pin, explicit := findPin(in.Pins, par.Group, par.Artifact)
-		sub := module.PromoteInput{Group: par.Group, Artifact: par.Artifact, Version: par.Version,
-			Pins: in.Pins, AllowSnapshotRefs: in.AllowSnapshotRefs, AlignProperties: in.AlignProperties,
-			SetProperties: in.SetProperties, ReleaseProperties: in.ReleaseProperties,
-			NoMarker: in.NoMarker, Force: in.Force,
-			WithParent: true, Tool: in.Tool, Ancestors: append(append([]string(nil), in.Ancestors...), in.Group+":"+in.Artifact)}
-		if explicit {
-			sub.AsVersion = pin.Version
-		}
-		pp, err := m.PlanPromote(ctx, src, dst, sub)
-		if err != nil {
-			return parentError(ctx, dst, par, err)
-		}
-		// flatten: ancestors first, then this parent
-		plan.Parents = append(plan.Parents, pp.Parents...)
-		plan.PinsUsed = append(plan.PinsUsed, pp.PinsUsed...)
-		plan.PropsUsed = append(plan.PropsUsed, pp.PropsUsed...)
-		pp.Parents = nil
-		plan.Parents = append(plan.Parents, pp)
-		if !explicit {
-			pins = append(append([]module.Pin(nil), in.Pins...), module.Pin{Group: par.Group, Artifact: par.Artifact, Version: pp.TargetVersion})
-		}
-		if pr, err = RewritePomOpts(raw, target, pins, opts); err != nil {
-			return err
+		opts.Targets, opts.StripUnlinked = targets, true
+		if resolved || len(targets) == 0 {
+			pins = newPins
+			if pr, err = RewritePomOpts(raw, target, pins, opts); err != nil {
+				return err
+			}
 		}
 	} else if pr.Parent != nil {
 		checkParentInDestination(ctx, dst, plan, pr.Parent, pins)
@@ -352,7 +357,7 @@ func (m *Module) rewritePomItem(ctx context.Context, src, dst module.Target, it 
 		}
 	}
 	plan.PropsUsed = append(plan.PropsUsed, pr.SetUsed...)
-	verifyPropertyArtifacts(ctx, dst, plan, pr)
+	verifyPropertyArtifacts(ctx, dst, plan, pr, in.Chain)
 	plan.SnapshotRefs = append(plan.SnapshotRefs, pr.Refs...)
 	it.Content, it.Size, it.SHA1 = pr.Out, int64(len(pr.Out)), sha1Hex(pr.Out)
 	it.Transformed, it.Diff = !bytes.Equal(pr.Out, raw), pr.Diff
@@ -461,29 +466,11 @@ func releasedInDestination(ctx context.Context, dst module.Target, g, a, v strin
 	return err == nil
 }
 
-// parentError wraps a parent planning failure with one actionable hint (the innermost
-// failure of a chain carries it; outer levels only add context).
-func parentError(ctx context.Context, dst module.Target, par *ParentRef, err error) error {
-	if strings.Contains(err.Error(), "\n  → ") {
-		return fmt.Errorf("parent %s:%s:%s : %w", par.Group, par.Artifact, par.Version, err)
-	}
-	hint := fmt.Sprintf("promouvez-le séparément puis utilisez --pin %s:%s=<version>", par.Group, par.Artifact)
-	if errors.Is(err, ErrNoBuild) {
-		base := par.Version[:len(par.Version)-len("-SNAPSHOT")]
-		if releasedInDestination(ctx, dst, par.Group, par.Artifact, base) {
-			hint = fmt.Sprintf("%s:%s:%s existe déjà dans %s : utilisez --pin %s:%s=%s", par.Group, par.Artifact, base, dst.Repo.Alias, par.Group, par.Artifact, base)
-		} else {
-			hint = fmt.Sprintf("aucun build snapshot et pas de version %s en release ; si une autre version existe dans %s, utilisez --pin %s:%s=<version>", base, dst.Repo.Alias, par.Group, par.Artifact)
-		}
-	}
-	return fmt.Errorf("parent %s:%s:%s : %w\n  → %s", par.Group, par.Artifact, par.Version, err, hint)
-}
-
 func pinKey(p module.Pin) string { return p.Group + ":" + p.Artifact + "=" + p.Version }
 
 // verifyPropertyArtifacts warns when an artifact whose version comes from a rewritten
 // property is absent from the destination (the release would not be resolvable).
-func verifyPropertyArtifacts(ctx context.Context, dst module.Target, plan *module.PromotePlan, pr *PomResult) {
+func verifyPropertyArtifacts(ctx context.Context, dst module.Target, plan *module.PromotePlan, pr *PomResult, chain *module.ChainState) {
 	names := make([]string, 0, len(pr.Changed))
 	for n := range pr.Changed {
 		names = append(names, n)
@@ -494,6 +481,9 @@ func verifyPropertyArtifacts(ctx context.Context, dst module.Target, plan *modul
 		for _, u := range pr.PropUsers[name] {
 			if u.Group == "" || u.Artifact == "" || strings.Contains(u.Group+u.Artifact, "${") || strings.Contains(v, "${") {
 				continue
+			}
+			if chain != nil && chain.Seen[u.Group+":"+u.Artifact+":"+v] != nil {
+				continue // already decided by the promotion plan (released, to promote, or blocking)
 			}
 			if !releasedInDestination(ctx, dst, u.Group, u.Artifact, v) {
 				plan.Warnings = append(plan.Warnings, fmt.Sprintf("propriété %s → %s : %s:%s:%s est absent de %s (la release ne serait pas résolvable)", name, v, u.Group, u.Artifact, v, dst.Repo.Alias))
@@ -653,6 +643,9 @@ func findComponent(ctx context.Context, src module.Target, in module.PromoteInpu
 func (m *Module) ExecutePromote(ctx context.Context, src, dst module.Target, plan *module.PromotePlan, rep module.Reporter) (*module.PromoteResult, error) {
 	if n := len(plan.Blocking()); n > 0 {
 		return nil, fmt.Errorf("%d fichier(s) en conflit : promotion annulée", n)
+	}
+	if len(plan.Blockers) > 0 {
+		return nil, fmt.Errorf("%d module(s) requis introuvable(s) : promotion annulée", len(plan.Blockers))
 	}
 	if refs := plan.BlockingRefs(); len(refs) > 0 {
 		return nil, fmt.Errorf("%d référence(s) SNAPSHOT dans le pom : promotion annulée", len(refs))

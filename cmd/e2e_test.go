@@ -20,6 +20,26 @@ const snapPom = "<project><artifactId>ghc</artifactId><version>1.0-SNAPSHOT</ver
 
 func sha(s string) string { h := sha1.Sum([]byte(s)); return hex.EncodeToString(h[:]) }
 
+const (
+	basePom = "<project><artifactId>base</artifactId><version>1.0-SNAPSHOT</version></project>"
+	// app inherits its version from base (same reactor, same base version as the root)
+	appPom = "<project><parent><groupId>com.acme</groupId><artifactId>base</artifactId><version>1.0-SNAPSHOT</version></parent><artifactId>app</artifactId></project>"
+)
+
+// extraComponent returns the search JSON of the single snapshot build of "app" or "base".
+func extraComponent(srvURL, name string) (string, map[string]string) {
+	pom := basePom
+	if name == "app" {
+		pom = appPom
+	}
+	b := "20260914.020000-1"
+	pp := fmt.Sprintf("com/acme/%s/1.0-SNAPSHOT/%s-1.0-%s.pom", name, name, b)
+	files := map[string]string{pp: pom}
+	return fmt.Sprintf(`{"id":"x-%s","group":"com.acme","name":"%s","version":"1.0-%s","assets":[
+		{"path":"%s","downloadUrl":"%s/nexus/repository/snap/%s","fileSize":%d,"checksum":{"sha1":"%s"}}]}`,
+		name, name, b, pp, srvURL, pp, len(pom), sha(pom)), files
+}
+
 func fakeNexus(t *testing.T) (*httptest.Server, map[string]string) {
 	dst := map[string]string{}
 	jar := "JAR"
@@ -33,8 +53,17 @@ func fakeNexus(t *testing.T) (*httptest.Server, map[string]string) {
 		io.WriteString(w, `[{"name":"snap","format":"maven2","type":"hosted","attributes":{"maven":{"versionPolicy":"MIXED"}}},
 			{"name":"rel","format":"maven2","type":"hosted","attributes":{"maven":{"versionPolicy":"RELEASE"},"storage":{"writePolicy":"ALLOW_ONCE"}}}]`)
 	})
+	snapFiles := map[string]string{}
 	mux.HandleFunc("/nexus/service/rest/v1/search", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("maven.baseVersion") != "" {
+		if name := r.URL.Query().Get("name"); name == "app" || name == "base" {
+			c, files := extraComponent(srv.URL, name)
+			for k, v := range files {
+				snapFiles[k] = v
+			}
+			fmt.Fprintf(w, `{"items":[%s]}`, c)
+			return
+		}
+		if r.URL.Query().Get("maven.baseVersion") != "" || r.URL.Query().Get("name") == "ghc" {
 			var items []string
 			for _, b := range []string{"20260914.070210-43", "20260914.091709-45"} {
 				items = append(items, fmt.Sprintf(`{"id":"c-%s","group":"com.acme","name":"ghc","version":"1.0-%s","assets":[
@@ -49,6 +78,10 @@ func fakeNexus(t *testing.T) (*httptest.Server, map[string]string) {
 		"assets":[{"path":"com/acme/lib/1.0/lib-1.0.jar","downloadUrl":"%s/nexus/repository/snap/com/acme/lib/1.0/lib-1.0.jar","fileSize":3,"checksum":{"sha1":"%s"}}]}],"continuationToken":null}`, srv.URL, sha(jar))
 	})
 	mux.HandleFunc("/nexus/repository/snap/", func(w http.ResponseWriter, r *http.Request) {
+		if c, ok := snapFiles[strings.TrimPrefix(r.URL.Path, "/nexus/repository/snap/")]; ok {
+			io.WriteString(w, c)
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/pom") || strings.HasSuffix(r.URL.Path, ".pom") {
 			io.WriteString(w, snapPom)
 			return

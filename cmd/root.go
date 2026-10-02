@@ -33,6 +33,7 @@ const (
 	exitUsage       = 2
 	exitPartial     = 3
 	exitAuth        = 4
+	exitPlanNeeded  = 5
 	exitInterrupted = 130
 )
 
@@ -42,6 +43,7 @@ var (
 	registry = module.NewRegistry(maven.New())
 
 	outOverride, errOverride io.Writer // set by tests only
+	inOverride               *os.File  // set by tests only: scripted answers for the prompts
 )
 
 type usageError struct{ error }
@@ -58,6 +60,9 @@ func newRoot() *cobra.Command {
 			env = ui.Detect(flags)
 			if outOverride != nil { // tests
 				env.Out, env.Err, env.OutTTY, env.InTTY = outOverride, errOverride, false, false
+			}
+			if inOverride != nil {
+				env.In, env.InTTY = inOverride, true
 			}
 		},
 	}
@@ -90,6 +95,7 @@ func Execute() int {
 
 func report(ctx context.Context, err error) int {
 	var uerr usageError
+	var planNeeded planRequiredError
 	switch {
 	case errors.Is(err, context.Canceled) || ctx.Err() != nil:
 		fmt.Fprintln(env.Err, "\ninterrompu")
@@ -97,6 +103,9 @@ func report(ctx context.Context, err error) int {
 	case errors.As(err, &uerr):
 		env.Failure("Utilisation incorrecte", uerr.Error(), "voir `nexus --help`")
 		return exitUsage
+	case errors.As(err, &planNeeded):
+		env.Failure("Plan de promotion à valider", planNeeded.why, planNeeded.hint)
+		return exitPlanNeeded
 	case errors.Is(err, module.ErrPartial):
 		return exitPartial
 	case nexus.IsAuth(err):

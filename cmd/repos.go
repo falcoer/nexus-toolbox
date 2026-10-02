@@ -41,6 +41,27 @@ func newRepos() *cobra.Command {
 			},
 		},
 		&cobra.Command{
+			Use: "link <repo-snapshot> <repo-release>", Short: "Définit la paire source/destination par défaut de `nexus promote`", Args: cobra.ExactArgs(2),
+			ValidArgsFunction: aliasCompletion(2),
+			RunE: func(_ *cobra.Command, args []string) error {
+				cfg, err := config.Load()
+				if err != nil {
+					return err
+				}
+				for _, a := range args {
+					if _, err := cfg.Get(a); err != nil {
+						return err
+					}
+				}
+				cfg.Promotion = config.Promotion{From: args[0], To: args[1]}
+				if err := cfg.Save(); err != nil {
+					return err
+				}
+				env.Successf("promotion par défaut : %s %s %s", env.Accent(args[0]), env.Arrow(), env.Accent(args[1]))
+				return nil
+			},
+		},
+		&cobra.Command{
 			Use: "remove <alias>", Aliases: []string{"rm"}, Short: "Oublie un repository et son mot de passe", Args: cobra.ExactArgs(1),
 			ValidArgsFunction: aliasCompletion(1),
 			RunE: func(_ *cobra.Command, args []string) error {

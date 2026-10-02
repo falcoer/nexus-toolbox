@@ -99,7 +99,10 @@ func TestAlignPropertiesAppliesToParentsAndIsWritten(t *testing.T) {
 	i := withParent()
 	i.AlignProperties = true
 	plan, err := New().PlanPromote(context.Background(), src, dst, i)
-	if err != nil || len(plan.Parents) != 1 || plan.Parents[0].Items[0].Action != "skip" || len(plan.BlockingRefs()) != 0 {
-		t.Fatalf("%v %+v", err, plan.Parents)
+	if err != nil || len(plan.Parents) != 0 || len(plan.BlockingRefs()) != 0 || len(plan.Blockers) != 0 {
+		t.Fatalf("%v %+v", err, plan)
+	}
+	if len(plan.Modules) != 1 || plan.Modules[0].Artifact != "par" || plan.Modules[0].Status != "released" {
+		t.Errorf("the parent already released at the target version needs no promotion: %+v", plan.Modules)
 	}
 }

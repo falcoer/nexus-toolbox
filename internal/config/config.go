@@ -25,9 +25,16 @@ type Repo struct {
 	Alias  string `yaml:"-"`
 }
 
+// Promotion is the default source/destination pair of `nexus promote`.
+type Promotion struct {
+	From string `yaml:"from,omitempty"`
+	To   string `yaml:"to,omitempty"`
+}
+
 type Config struct {
-	Repos map[string]Repo `yaml:"repos"`
-	path  string
+	Repos     map[string]Repo `yaml:"repos"`
+	Promotion Promotion       `yaml:"promotion,omitempty"`
+	path      string
 }
 
 // Dir returns the config directory (NEXUS_HOME or ~/.nexus).
@@ -115,4 +122,43 @@ func ParseRepoURL(raw string) (base, name string, err error) {
 		base += "/" + prefix
 	}
 	return base, rest[0], nil
+}
+
+// PromotionPair returns the default (snapshot, release) repositories for `nexus promote`:
+// the pair saved with `nexus repos link`, else the only hosted maven2 repository of version
+// policy SNAPSHOT together with the only one of policy RELEASE.
+func (c *Config) PromotionPair() (from, to string, err error) {
+	if c.Promotion.From != "" && c.Promotion.To != "" {
+		for _, a := range []string{c.Promotion.From, c.Promotion.To} {
+			if _, ok := c.Repos[a]; !ok {
+				return "", "", fmt.Errorf("la paire par défaut référence %q, qui n'est plus configuré : `nexus repos link <snapshot> <release>`", a)
+			}
+		}
+		return c.Promotion.From, c.Promotion.To, nil
+	}
+	var snaps, rels []string
+	for _, a := range c.Aliases() {
+		r := c.Repos[a]
+		if r.Format != "maven2" || (r.Type != "" && r.Type != "hosted") {
+			continue
+		}
+		switch strings.ToUpper(r.Policy) {
+		case "SNAPSHOT":
+			snaps = append(snaps, a)
+		case "RELEASE":
+			rels = append(rels, a)
+		}
+	}
+	if len(snaps) == 1 && len(rels) == 1 {
+		return snaps[0], rels[0], nil
+	}
+	return "", "", fmt.Errorf("dépôts source/destination non déterminables (snapshots : %s ; releases : %s) : utilisez --from/--to, ou enregistrez la paire avec `nexus repos link <snapshot> <release>`",
+		orNone(snaps), orNone(rels))
+}
+
+func orNone(l []string) string {
+	if len(l) == 0 {
+		return "aucun"
+	}
+	return strings.Join(l, ", ")
 }

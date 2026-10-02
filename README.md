@@ -35,13 +35,10 @@ nexus download rel com.acme:ghc-web:03.27.10-0                          # dans l
 nexus download rel com.acme:ghc-web:03.27.10-0 --dir .\dist --include "*.zip"
 nexus download snap com.acme:ghc-web:03.27.10-0-SNAPSHOT --build 43 --dry-run
 
-# 5. promouvoir un snapshot en release (toujours commencer par --dry-run)
-nexus promote snap rel com.acme:ghc-web:03.27.10-0-SNAPSHOT --dry-run
-nexus promote snap rel com.acme:ghc-web:03.27.10-0-SNAPSHOT                    # → 03.27.10-0, build le plus récent
-nexus promote snap rel com.acme:ghc-web:03.27.10-0-SNAPSHOT --build 43 --as-version 03.27.10-1
-nexus promote snap rel com.acme:ghc-web:03.27.10-0-SNAPSHOT --pin com.acme:parent=1.0
-nexus promote snap rel com.acme:ghc-web:03.27.10-0-SNAPSHOT --with-parent --dry-run   # promeut aussi le(s) parent(s) SNAPSHOT
-nexus promote snap rel com.acme:quality-core:1.4.2 --delete-source             # version déjà figée
+# 5. promouvoir (artifact, puis version cible ; tout le reste est déduit)
+nexus promote flux-editor 18.00.00.beta1-0 --dry-run             # le plan, rien n'est écrit
+nexus promote flux-editor 18.00.00.beta1-0                       # promotion (confirmation demandée)
+nexus promote                                                    # assistant interactif, affiche la commande à réutiliser
 ```
 
 ### Ce que fait `info`
@@ -52,7 +49,10 @@ Sans version : liste des versions (type, builds, fichiers, date). Avec une versi
 
 Télécharge les fichiers d'une version (ceux de `nexus info`) : chacun est écrit en `.part`, comparé au sha1 donné par Nexus, puis renommé, donc un transfert interrompu ou corrompu ne laisse jamais un fichier qui paraît complet. Un fichier local identique est ignoré ; un fichier différent est refusé sauf `--force`. `--include` / `--exclude` filtrent par nom (motifs `*.zip`), `--dry-run` liste sans rien écrire, `--build` choisit un build de snapshot. Les chemins téléchargés sont écrits sur la sortie standard, un par ligne ; relancer la commande après une coupure ne retélécharge que ce qui manque.
 
-### Ce que fait `promote`
+### Ce que fait `promote` (voir [docs/PROMOTION.md](docs/PROMOTION.md))
+
+Aide-mémoire complet : les 4 règles automatiques (dépôts, artifact, source, cible), les statuts des modules requis (« en release », « à promouvoir », « bloquant ») et le code retour 5. Détail des mécanismes :
+
 
 - **Build** : pour un `-SNAPSHOT`, choisit le build horodaté le plus récent (ou `--build 43` / version horodatée explicite). Le dry-run liste les builds disponibles.
 - **Renommage** : `ghc-web-03.27.10-0-20260914.070210-43.war` → `ghc-web-03.27.10-0.war` (classifier et extension conservés). Version cible = source sans `-SNAPSHOT`, ou `--as-version`.
@@ -83,6 +83,7 @@ Pour mettre à jour une dépendance (depuis un poste avec accès réseau) :
 ## Documentation
 
 - [docs/CLI-UX-GUIDELINES.md](docs/CLI-UX-GUIDELINES.md) — charte UX commune à tous nos CLI (couleurs, tableaux, flux, pagination, erreurs, codes retour)
+- [docs/PROMOTION.md](docs/PROMOTION.md) — aide-mémoire de la promotion (à lire avant de réutiliser l'outil)
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — modules, promotion, trajectoire MCP
 
 ## Développement

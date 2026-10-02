@@ -81,12 +81,30 @@ type PromoteInput struct {
 	NoMarker          bool              `json:"no_marker,omitempty"`
 	SetProperties     map[string]string `json:"set_properties,omitempty"`     // --set-property name=value
 	ReleaseProperties bool              `json:"release_properties,omitempty"` // strip -SNAPSHOT from remaining SNAPSHOT properties
-	AlignProperties   bool              `json:"align_properties,omitempty"`   // take SNAPSHOT property values from the pom already released at the target
-	WithParent        bool              `json:"with_parent,omitempty"`        // also promote SNAPSHOT parent poms, ancestors first
-	Ancestors         []string          `json:"-"`                            // group:artifact chain being planned (cycle/depth guard)
+	Chain             *ChainState       `json:"-"`
+	AlignProperties   bool              `json:"align_properties,omitempty"` // take SNAPSHOT property values from the pom already released at the target
+	WithParent        bool              `json:"with_parent,omitempty"`      // also promote SNAPSHOT parent poms, ancestors first
+	Ancestors         []string          `json:"-"`                          // group:artifact chain being planned (cycle/depth guard)
 	Force             bool              `json:"force,omitempty"`
 	DeleteSource      bool              `json:"delete_source,omitempty"`
 	Tool              string            `json:"-"` // "nexus-toolbox x.y.z", written in the marker file
+}
+
+// ModuleStatus describes one module a promotion depends on.
+type ModuleStatus struct {
+	Group    string `json:"group"`
+	Artifact string `json:"artifact"`
+	Version  string `json:"version"` // target version
+	Status   string `json:"status"`  // released | promote | blocked | root
+	Detail   string `json:"detail,omitempty"`
+}
+
+// ChainState is shared by every plan of one promotion (root and required modules): the versions
+// decided so far, so that a module needed twice is planned once and cycles are cut.
+type ChainState struct {
+	RootBase   string // snapshot base version of the root (without -SNAPSHOT)
+	RootTarget string // its target version: modules of the same base follow it
+	Seen       map[string]*ModuleStatus
 }
 
 const (
@@ -130,9 +148,11 @@ type PromotePlan struct {
 	SourceID          string         `json:"source_component_id,omitempty"`
 	Parents           []*PromotePlan `json:"parents,omitempty"` // SNAPSHOT parents to promote first (highest ancestor first)
 	WritePolicy       string         `json:"destination_write_policy,omitempty"`
-	PinsUsed          []string       `json:"-"`               // pins that changed a pom of the chain
-	PropsUsed         []string       `json:"-"`               // --set-property names found in a pom of the chain
-	Notes             []string       `json:"notes,omitempty"` // diagnostics (provenance of an existing release…)
+	PinsUsed          []string       `json:"-"`                  // pins that changed a pom of the chain
+	PropsUsed         []string       `json:"-"`                  // --set-property names found in a pom of the chain
+	Modules           []ModuleStatus `json:"modules,omitempty"`  // modules the root depends on, with their status
+	Blockers          []string       `json:"blockers,omitempty"` // modules missing everywhere: the promotion cannot go on
+	Notes             []string       `json:"notes,omitempty"`    // diagnostics (provenance of an existing release…)
 	Items             []PlanItem     `json:"items"`
 	SnapshotRefs      []string       `json:"unresolved_snapshot_refs,omitempty"`
 	AllowSnapshotRefs bool           `json:"allow_snapshot_refs,omitempty"`
@@ -264,6 +284,19 @@ type Inspector interface {
 	Versions(ctx context.Context, t Target, group, artifact string) (*ArtifactSummary, error)
 	// Inspect describes one version, with a direct download link per file.
 	Inspect(ctx context.Context, t Target, in InspectInput) (*ComponentDetails, error)
+}
+
+// ---- find ----
+
+// ArtifactRef identifies an artifact in a repository.
+type ArtifactRef struct {
+	Group    string `json:"group"`
+	Artifact string `json:"artifact"`
+}
+
+// Finder looks an artifact up by its artifactId alone.
+type Finder interface {
+	FindArtifacts(ctx context.Context, t Target, artifactID string) ([]ArtifactRef, error)
 }
 
 // ---- registry ----

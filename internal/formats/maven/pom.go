@@ -23,6 +23,17 @@ type PomResult struct {
 	Changed    map[string]string      // properties rewritten: name → new value
 	PropUsers  map[string][]ParentRef // property → parent/dependency/plugin coordinates using ${property} as version
 	SetUsed    []string               // --set-property names found in this pom
+	Needs      []Need                 // SNAPSHOT modules this pom still depends on (see Need)
+}
+
+// Need is a SNAPSHOT module the pom refers to: its parent, a dependency/plugin written with a
+// SNAPSHOT version, or a dependency whose version comes from a SNAPSHOT property.
+type Need struct {
+	Kind     string // parent | dependency | plugin | property
+	Group    string // may be ${project.groupId}
+	Artifact string // empty for a property that no dependency uses
+	Version  string // the SNAPSHOT version found
+	Property string // name of the property (Kind == "property")
 }
 
 // PomOpts tunes property rewriting. Precedence: Set > Aligned > Strip.
@@ -30,10 +41,18 @@ type PomOpts struct {
 	Set           map[string]string // explicit values (--set-property), applied whatever the current value
 	Aligned       map[string]string // values taken from the release already published (--align-properties)
 	StripSnapshot bool              // --release-properties: drop "-SNAPSHOT" from remaining SNAPSHOT properties
+	Targets       map[string]string // property → version of the module it designates (resolved by the promotion plan)
+	StripUnlinked bool              // drop "-SNAPSHOT" from SNAPSHOT properties no dependency uses as a version
 }
 
 // ParentRef is the <parent> declared by a pom (as found, before any pin).
 type ParentRef struct{ Group, Artifact, Version string }
+
+// propSpan is one <properties> entry with the byte range of its value.
+type propSpan struct {
+	name, val  string
+	start, end int
+}
 
 type edit struct {
 	start, end int
@@ -43,6 +62,7 @@ type edit struct {
 // coordCtx collects the coordinates of a <parent>, <dependency> or <plugin> element.
 type coordCtx struct {
 	kind            string
+	key             string // parent | dependency | plugin
 	depth           int
 	group, artifact string
 	vStart, vEnd    int
@@ -69,6 +89,7 @@ func RewritePomOpts(src []byte, newVersion string, pins []module.Pin, opts PomOp
 		res   = &PomResult{Props: map[string]string{}, Changed: map[string]string{}, PropUsers: map[string][]ParentRef{}}
 		used  = map[int]bool{}
 		prev  int
+		props []propSpan
 		// text capture for leaf elements we care about
 		textStart, textEnd int
 		textFor            string
@@ -93,11 +114,11 @@ func RewritePomOpts(src []byte, newVersion string, pins []module.Pin, opts PomOp
 			}
 			switch {
 			case n == 2 && path[0] == "project" && t.Name.Local == "parent":
-				ctxs = append(ctxs, &coordCtx{kind: "parent", depth: n})
+				ctxs = append(ctxs, &coordCtx{kind: "parent", key: "parent", depth: n})
 			case n >= 3 && path[n-2] == "dependencies" && t.Name.Local == "dependency":
-				ctxs = append(ctxs, &coordCtx{kind: "dépendance", depth: n})
+				ctxs = append(ctxs, &coordCtx{kind: "dépendance", key: "dependency", depth: n})
 			case n >= 3 && path[n-2] == "plugins" && t.Name.Local == "plugin":
-				ctxs = append(ctxs, &coordCtx{kind: "plugin", depth: n})
+				ctxs = append(ctxs, &coordCtx{kind: "plugin", key: "plugin", depth: n})
 			}
 			switch {
 			case n == 2 && path[0] == "project" && t.Name.Local == "version":
@@ -136,28 +157,7 @@ func RewritePomOpts(src []byte, newVersion string, pins []module.Pin, opts PomOp
 				case "prop":
 					name := path[len(path)-1]
 					res.Props[name] = val
-					apply := func(nv, why string) {
-						if nv != val {
-							edits = append(edits, edit{start, end, nv})
-							res.Changed[name] = nv
-							res.Diff = append(res.Diff, fmt.Sprintf("propriété %s : %s → %s (%s)", name, val, nv, why))
-						}
-						if IsSnapshot(nv) {
-							res.Refs = append(res.Refs, fmt.Sprintf("propriété %s = %s", name, nv))
-						}
-					}
-					if nv, ok := opts.Set[name]; ok {
-						res.SetUsed = append(res.SetUsed, name)
-						apply(nv, "--set-property")
-					} else if IsSnapshot(val) {
-						if nv, ok := opts.Aligned[name]; ok && nv != "" && !IsSnapshot(nv) {
-							apply(nv, "valeur de la release existante")
-						} else if opts.StripSnapshot {
-							apply(val[:len(val)-len("-SNAPSHOT")], "-SNAPSHOT retiré")
-						} else {
-							res.Refs = append(res.Refs, fmt.Sprintf("propriété %s = %s", name, val))
-						}
-					}
+					props = append(props, propSpan{name, val, start, end})
 				}
 			}
 		case xml.EndElement:
@@ -186,9 +186,53 @@ func RewritePomOpts(src []byte, newVersion string, pins []module.Pin, opts PomOp
 					if !pinned {
 						res.Refs = append(res.Refs, fmt.Sprintf("%s : %s", label(c), c.version))
 					}
+					// pinned or not, the module must exist in the destination (or be promoted first)
+					res.Needs = append(res.Needs, Need{Kind: c.key, Group: c.group, Artifact: c.artifact, Version: c.version})
 				}
 			}
 			path = path[:n-1]
+		}
+	}
+	// Properties are settled once every usage is known (dependencies may come after <properties>).
+	for _, sp := range props {
+		name, val := sp.name, sp.val
+		apply := func(nv, why string) {
+			if nv != val {
+				edits = append(edits, edit{sp.start, sp.end, nv})
+				res.Changed[name] = nv
+				res.Diff = append(res.Diff, fmt.Sprintf("propriété %s : %s → %s (%s)", name, val, nv, why))
+			}
+			if IsSnapshot(nv) {
+				res.Refs = append(res.Refs, fmt.Sprintf("propriété %s = %s", name, nv))
+			}
+		}
+		if nv, ok := opts.Set[name]; ok {
+			res.SetUsed = append(res.SetUsed, name)
+			apply(nv, "--set-property")
+			continue
+		}
+		if !IsSnapshot(val) {
+			continue
+		}
+		stripped := val[:len(val)-len("-SNAPSHOT")]
+		switch nv, ok := opts.Aligned[name]; {
+		case ok && nv != "" && !IsSnapshot(nv):
+			apply(nv, "valeur de la release existante")
+		case opts.Targets[name] != "":
+			apply(opts.Targets[name], "version du module requis")
+		case opts.StripSnapshot:
+			apply(stripped, "-SNAPSHOT retiré")
+		case opts.StripUnlinked && len(res.PropUsers[name]) == 0:
+			apply(stripped, "propriété liée à aucun artifact, -SNAPSHOT retiré")
+		default:
+			res.Refs = append(res.Refs, fmt.Sprintf("propriété %s = %s", name, val))
+			if users := res.PropUsers[name]; len(users) > 0 {
+				for _, u := range users {
+					res.Needs = append(res.Needs, Need{Kind: "property", Group: u.Group, Artifact: u.Artifact, Version: val, Property: name})
+				}
+			} else {
+				res.Needs = append(res.Needs, Need{Kind: "property", Version: val, Property: name})
+			}
 		}
 	}
 	for i, p := range pins {

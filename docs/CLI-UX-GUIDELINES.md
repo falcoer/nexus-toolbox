@@ -131,6 +131,10 @@ TTY et résultat long        → pager
 - `--dry-run` : montre exactement ce qui serait fait, ne modifie rien, code retour 0.
 - Ctrl‑C : arrêt propre, état partiel indiqué, code 130.
 
+### Assistants interactifs
+
+Quand une commande a de nombreux paramètres, elle propose un **assistant** (lancée sans argument, terminal requis) : une question à la fois, une valeur par défaut raisonnable entre crochets, choix numérotés pour les listes, plan complet avant toute écriture, confirmation. **L'assistant se termine toujours en affichant la commande courte équivalente** (« Commande équivalente, à réutiliser »), pour que la prochaine fois se fasse sans lui. Les décisions qui engagent plus que la demande initiale (publier des modules supplémentaires) exigent une réponse explicite que `--yes` ne donne pas.
+
 ## 9. Progression
 
 - **Durée inconnue** : spinner + libellé d'étape (`⠋ Recherche des assets…`).
@@ -161,6 +165,7 @@ Format **quoi / pourquoi / que faire** :
 | 2 | mauvais usage (arguments/flags invalides) |
 | 3 | échec **partiel** (une partie des éléments a réussi) |
 | 4 | authentification / autorisation refusée |
+| 5 | **plan à valider** : l'action publierait plus que ce qui a été demandé ; rien n'a été modifié, relancer avec l'option d'acceptation explicite |
 | 130 | interrompu par l'utilisateur |
 
 ## 11. Aide et découvrabilité

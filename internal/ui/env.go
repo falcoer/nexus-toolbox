@@ -3,6 +3,7 @@
 package ui
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -33,6 +34,7 @@ type Env struct {
 	Width    int
 	Height   int
 	Flags    Flags
+	reader   *bufio.Reader
 }
 
 // Detect inspects the process environment and resolves the presentation mode.

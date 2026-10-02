@@ -67,18 +67,20 @@ func newFake(t *testing.T, policy string) *fake {
 	mux.HandleFunc("/service/rest/v1/search", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("repository") == "dst" { // lists what the destination holds
 			q := r.URL.Query()
-			prefix := strings.ReplaceAll(q.Get("group"), ".", "/") + "/" + q.Get("name") + "/" + q.Get("version") + "/"
+			prefix := strings.ReplaceAll(q.Get("group"), ".", "/") + "/" + q.Get("name") + "/"
 			f.mu.Lock()
-			var assets []nexus.Asset
+			byVersion := map[string][]nexus.Asset{}
 			for p := range f.dst {
-				if strings.HasPrefix(p, prefix) {
-					assets = append(assets, nexus.Asset{Path: p, DownloadURL: f.srv.URL + "/repository/dst/" + p})
+				if rest, ok := strings.CutPrefix(p, prefix); ok {
+					if v, _, ok := strings.Cut(rest, "/"); ok && (q.Get("version") == "" || q.Get("version") == v) {
+						byVersion[v] = append(byVersion[v], nexus.Asset{Path: p, DownloadURL: f.srv.URL + "/repository/dst/" + p})
+					}
 				}
 			}
 			f.mu.Unlock()
 			items := []nexus.Component{}
-			if len(assets) > 0 {
-				items = append(items, nexus.Component{Group: q.Get("group"), Name: q.Get("name"), Version: q.Get("version"), Assets: assets})
+			for v, assets := range byVersion {
+				items = append(items, nexus.Component{Group: q.Get("group"), Name: q.Get("name"), Version: v, Assets: assets})
 			}
 			json.NewEncoder(w).Encode(nexus.ComponentPage{Items: items})
 			return
