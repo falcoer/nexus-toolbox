@@ -142,7 +142,7 @@ func (c *Config) PromotionPair() (from, to string, err error) {
 		if r.Format != "maven2" || (r.Type != "" && r.Type != "hosted") {
 			continue
 		}
-		switch strings.ToUpper(r.Policy) {
+		switch r.EffectivePolicy(a) {
 		case "SNAPSHOT":
 			snaps = append(snaps, a)
 		case "RELEASE":
@@ -152,7 +152,7 @@ func (c *Config) PromotionPair() (from, to string, err error) {
 	if len(snaps) == 1 && len(rels) == 1 {
 		return snaps[0], rels[0], nil
 	}
-	return "", "", fmt.Errorf("dépôts source/destination non déterminables (snapshots : %s ; releases : %s) : utilisez --from/--to, ou enregistrez la paire avec `nexus repos link <snapshot> <release>`",
+	return "", "", fmt.Errorf("dépôts source/destination non déterminables (snapshots : %s ; releases : %s) : enregistrez la paire une fois avec `nexus repos link <snapshot> <release>` (alias visibles avec `nexus repos list`), ou utilisez --from/--to",
 		orNone(snaps), orNone(rels))
 }
 
@@ -161,4 +161,22 @@ func orNone(l []string) string {
 		return "aucun"
 	}
 	return strings.Join(l, ", ")
+}
+
+// EffectivePolicy is the Maven version policy of the repository: the one recorded by `nexus init`
+// (SNAPSHOT, RELEASE or MIXED), and when Nexus did not report it, a guess from the names
+// ("snapshot" or "release" in the alias, repository name or URL) so that conventionally named
+// repositories work without configuration.
+func (r Repo) EffectivePolicy(alias string) string {
+	if p := strings.ToUpper(r.Policy); p != "" {
+		return p
+	}
+	text := strings.ToLower(alias + " " + r.Name + " " + r.URL)
+	switch snap, rel := strings.Contains(text, "snapshot"), strings.Contains(text, "release"); {
+	case snap && !rel:
+		return "SNAPSHOT"
+	case rel && !snap:
+		return "RELEASE"
+	}
+	return ""
 }

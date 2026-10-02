@@ -167,10 +167,41 @@ func (c *Client) Repository(ctx context.Context, name string) (RepoInfo, error) 
 	}
 	for _, r := range all {
 		if r.Name == name {
+			c.fillMavenHosted(ctx, &r)
 			return r, nil
 		}
 	}
 	return RepoInfo{}, fmt.Errorf("repository %q introuvable sur %s (ou non visible avec ce compte)", name, c.Base)
+}
+
+// fillMavenHosted completes the version and write policies when the repository list does not
+// carry them (older Nexus versions only expose them on the per-repository endpoint, which
+// needs administration rights: failures are ignored, the policies then stay empty).
+func (c *Client) fillMavenHosted(ctx context.Context, r *RepoInfo) {
+	if r.Format != "maven2" || r.Type != "hosted" {
+		return
+	}
+	if r.Attributes.Maven.VersionPolicy != "" && r.Attributes.Storage.WritePolicy != "" {
+		return
+	}
+	var d struct {
+		Storage struct {
+			WritePolicy string `json:"writePolicy"`
+		} `json:"storage"`
+		Maven struct {
+			VersionPolicy string `json:"versionPolicy"`
+			LayoutPolicy  string `json:"layoutPolicy"`
+		} `json:"maven"`
+	}
+	if err := c.getJSON(ctx, c.Base+"/service/rest/v1/repositories/maven/hosted/"+url.PathEscape(r.Name), &d); err != nil {
+		return
+	}
+	if r.Attributes.Maven.VersionPolicy == "" {
+		r.Attributes.Maven.VersionPolicy, r.Attributes.Maven.LayoutPolicy = d.Maven.VersionPolicy, d.Maven.LayoutPolicy
+	}
+	if r.Attributes.Storage.WritePolicy == "" {
+		r.Attributes.Storage.WritePolicy = d.Storage.WritePolicy
+	}
 }
 
 type Asset struct {

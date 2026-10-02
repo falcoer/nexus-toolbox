@@ -54,3 +54,27 @@ func TestRetryOn5xx(t *testing.T) {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
 }
+
+// Older Nexus versions list repositories without their policies: they come from the hosted endpoint.
+func TestRepositoryFillsPoliciesFromHostedEndpoint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/service/rest/v1/repositories":
+			w.Write([]byte(`[{"name":"rel","format":"maven2","type":"hosted","attributes":{}},{"name":"px","format":"maven2","type":"proxy","attributes":{}}]`))
+		case "/service/rest/v1/repositories/maven/hosted/rel":
+			w.Write([]byte(`{"name":"rel","storage":{"writePolicy":"ALLOW_ONCE"},"maven":{"versionPolicy":"RELEASE","layoutPolicy":"STRICT"}}`))
+		default:
+			w.WriteHeader(403) // not an administrator
+		}
+	}))
+	defer srv.Close()
+	c := New(srv.URL, "", "")
+	info, err := c.Repository(context.Background(), "rel")
+	if err != nil || info.Attributes.Maven.VersionPolicy != "RELEASE" || info.Attributes.Storage.WritePolicy != "ALLOW_ONCE" {
+		t.Fatalf("%+v %v", info, err)
+	}
+	px, err := c.Repository(context.Background(), "px")
+	if err != nil || px.Attributes.Maven.VersionPolicy != "" {
+		t.Fatalf("a proxy has no hosted endpoint: %+v %v", px, err)
+	}
+}

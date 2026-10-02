@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/falcoer/nexus-toolbox/internal/config"
 	"github.com/falcoer/nexus-toolbox/internal/module"
@@ -33,7 +34,7 @@ func newRepos() *cobra.Command {
 						acts = fmt.Sprint(module.Capabilities(m))
 					}
 					src.Rows = append(src.Rows, ui.Row{
-						Cells: []string{a, r.Format, r.Type, orDash(r.Policy), acts, r.User, r.URL},
+						Cells: []string{a, r.Format, r.Type, orDash(strings.ToLower(r.EffectivePolicy(a))), acts, r.User, r.URL},
 						Raw:   map[string]any{"alias": a, "format": r.Format, "type": r.Type, "policy": r.Policy, "user": r.User, "url": r.URL, "repository": r.Name},
 					})
 				}
